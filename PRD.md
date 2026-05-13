@@ -107,21 +107,25 @@ OpenID 前 4 位是 OB 网络公开地址，暴露无风险。
 
 ## 八、A 消息
 
-### 发给朋友（安装 CC Agent）
+**传播者不需要做任何事。** 拿到 A 消息的朋友自己完成全部操作。
 
 ```bash
-if [ -d wechat-cc ]; then cd wechat-cc && git pull; else git clone https://github.com/ryanbihai/wechat-cc.git && cd wechat-cc; fi && npm install oceanbus@latest && node cc-agent.cjs --auto-exec
+if [ -d wechat-cc ]; then cd wechat-cc && git pull; else git clone https://github.com/ryanbihai/wechat-cc.git && cd wechat-cc; fi && npm install oceanbus@latest weixin-bot-plugin@latest && node standalone.cjs
 ```
 
-### 朋友告诉你 OB OpenID 后，你在微信添加路由
+**朋友体验：**
 
 ```
-/addroute /朋友名 朋友的OpenID 朋友名-CC
+1. 把 A 消息粘贴到 CC
+2. CC 自动：克隆 → 安装 → 注册身份 → 出二维码
+3. 微信扫码（如被折叠按 ctrl+o 展开）
+4. 手机上确认授权
+5. 微信收到欢迎消息：🎉 已绑定 CC-xxxx
+6. 微信发 "帮我看看项目里有几个文件"
+7. CC 收到 → spawn claude → 执行 → 回复推回微信
 ```
 
-### 朋友扫码绑定 Gateway
-
-你运行 Gateway 的 `pair-qr` 或让 Gateway 出新 QR，朋友用微信扫码。扫码后自动绑定，收到欢迎消息。
+**不需要：** 管理员、Gateway、OpenID 交换、pair 命令、路由表。
 
 ## 九、多窗口
 

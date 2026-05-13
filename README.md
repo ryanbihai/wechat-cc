@@ -21,11 +21,13 @@
 
 ## A 消息 — 邀请朋友
 
-发给朋友，一条命令即可加入：
+发给朋友，**你不需要做任何事**。朋友把这条命令发给自己的 CC 即可：
 
 ```bash
-if [ -d wechat-cc ]; then cd wechat-cc && git pull; else git clone https://github.com/ryanbihai/wechat-cc.git && cd wechat-cc; fi && npm install oceanbus@latest && node cc-agent.cjs --auto-exec
+if [ -d wechat-cc ]; then cd wechat-cc && git pull; else git clone https://github.com/ryanbihai/wechat-cc.git && cd wechat-cc; fi && npm install oceanbus@latest weixin-bot-plugin@latest && node standalone.cjs
 ```
+
+CC 会自动安装、注册身份、出二维码。朋友微信扫码 → 完成。**零配置，自服务。**
 
 朋友告诉你 OB OpenID（前 4 位），你在微信 `/addroute /朋友名 OpenID` 添加路由。朋友扫你的 Gateway 二维码，完成。
 
