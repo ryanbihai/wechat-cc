@@ -12,7 +12,6 @@
  */
 
 const { createOceanBus, RosterService } = require('oceanbus');
-const { WeixinBotClient } = require('weixin-bot-plugin');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -59,7 +58,8 @@ async function main() {
   console.log('   OpenID:  ' + creds.openid.slice(0, 5) + '...');
   console.log('');
 
-  // 2. WeixinBotClient
+  // 2. WeixinBotClient (ESM-only, dynamic import)
+  const { WeixinBotClient } = await import('weixin-bot-plugin');
   const client = new WeixinBotClient({
     stateDir: STATE_DIR,
     tempDir: path.join(os.tmpdir(), 'wechat-cc-standalone'),
