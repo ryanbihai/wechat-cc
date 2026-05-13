@@ -1,258 +1,169 @@
 # wechat-cc PRD：OB 网关模式
 
-> 2026-05-13 · v0.2.0 设计
+> 2026-05-13 · v0.2.2 · 已实现
 
 ## 一、产品定位
 
-wechat-cc 是**微信和 OceanBus Agent 之间的网关**。
-
-- 不负责处理消息
-- 不负责执行命令
-- 只负责**接收 → 查路由 → 转发 → 回传**
+wechat-cc 是**微信和 OceanBus Agent 之间的网关**。不处理任务，不执行命令，只做路由。
 
 ```
 微信(人类) ⇄ iLink ⇄ [wechat-cc 网关] ⇄ OB L0 ⇄ Agent(程序)
-                         │
-                    路由表 + 身份映射
 ```
 
----
+## 二、角色
 
-## 二、角色定义
+| 角色 | 身份 | 职责 |
+|------|------|------|
+| **微信用户** | iLink `user_id` | 发指令、收结果 |
+| **网关 Bot** | iLink `bot_token` + OB OpenID | 解析前缀、查路由、转发、回传 |
+| **CC Agent** | OB OpenID | 收指令、执行 Claude、回复 |
+| **其他 Agent** | OB OpenID | 收指令、执行、回复 |
 
-### 微信用户
+## 三、消息路由（Model C：默认会话 + 单条覆盖）
 
-- **做什么**：发送指令给 Agent，接收 Agent 的回复
-- **身份**：iLink `user_id`（随扫码自动获取）
-- **特殊地位**：是**人类在 OB 网络上的代理**，不处理任务，只收发
-
-### Bot / 网关
-
-- **做什么**：翻译微信消息为 OB 消息，翻译 OB 消息为微信消息
-- **身份**：iLink `bot_token` + OB OpenID `fkGrT...`
-- **核心职责**：解析路由前缀、查表转发、回传结果
-
-### Agent
-
-- **做什么**：接收指令、执行任务、返回结果
-- **身份**：OB OpenID `qMaPC...`
-- **示例**：CC、Trae、Cursor、OpenClaw
-
----
-
-## 三、消息路由
-
-### 3.1 入向：微信 → Agent（12 步）
+### 入向：微信 → Agent
 
 ```
-1  用户在微信给 Bot 发消息
-    例: "/cc 帮我重构 user-service"
-
-2  iLink API 长轮询 → weixin-bot-plugin 拉取到消息
-
-3  WeixinBotClient 触发 "message" 事件
-     { chatId: "o9cq801VfF...", text: "/cc 帮我重构 user-service" }
-
-4  网关收到事件 → 检查 chatId 是否已绑定
-     未绑定 → 回复: "请先扫码绑定"
-     已绑定 → 继续
-
-5  网关解析路由前缀
-     text 首段匹配 "/xxx" 格式 → prefix="/cc", body="帮我重构 user-service"
-     无前缀 → 使用预设的默认 Agent
-
-6  网关查路由表
-     routes["/cc"] → { openId: "qMaPC...", name: "CC-oceanbus" }
-     未匹配 → 回复: "未知的 Agent 前缀: /cc。可用前缀: /cc, /trae, /cursor"
-
-7  网关构造 OB 入向消息体
-     {
-       action: "command",
-       text: "帮我重构 user-service",
-       meta: {
-         from_wx_user: "o9cq801VfF...",   // 回复时用于查找微信用户
-         route_prefix: "/cc",
-         message_id: "msg_xxx"             // 用于关联回复
-       }
-     }
-
-8  网关以 Bot OB 身份发送
-     ob.send("qMaPCuSjJjZYAEKYN_spK5...", message)
-
-9  OB P2P 网络投递到 Agent 的 OB 地址
-
-10 Agent OB 监听器收到消息
-     解析: action="command", text="帮我重构 user-service"
-
-11 Agent 执行任务
-     CC: Claude 分析代码、修改文件
-     Trae: 执行对应的 Trae task
-     Cursor: 导航到指定文件
-
-12 Agent 获得结果，准备回复
+1. 用户发消息 "/cc-svg 重构代码"
+2. iLink → weixin-bot-plugin → "message" 事件
+3. 网关解析前缀
+    已知 /cc-svg → 本次路由到 CC-svg（不改变默认会话）
+    无前缀 → 路由到当前默认 Agent
+4. 网关查路由表 → OB.send(Agent_OpenID, JSON命令)
+5. Agent 收到 → 执行 → 回复
 ```
 
-### 3.2 出向：Agent → 微信（8 步）
+### 出向：Agent → 微信
 
 ```
-1  Agent 执行完毕，获得结果
-     "重构完成。修改了 src/user.ts, src/auth.ts"
-
-2  Agent 从原始消息 meta 中提取回复所需信息
-     to_wx_user: "o9cq801VfF..."
-     message_id: "msg_xxx"
-
-3  Agent 构造 OB 出向消息体
-     {
-       action: "reply",
-       text: "重构完成。修改了 src/user.ts, src/auth.ts",
-       meta: {
-         to_wx_user: "o9cq801VfF...",    // ← 网关据此查找微信用户
-         reply_to: "msg_xxx",            // ← 关联原消息
-         agent_name: "CC-oceanbus"
-       }
-     }
-
-4  Agent 以自身 OB 身份发送
-     ob.send("fkGrTF7xx6WRYCN0...", reply)     // 发给网关的 OB 地址
-
-5  OB P2P 网络投递到网关的 OB 地址
-
-6  网关 OB 监听器收到 Agent 的回复
-     from_openid 匹配到 Agent（在路由表中）
-     提取: to_wx_user="o9cq801VfF..."
-
-7  网关 → iLink
-     client.sendText("o9cq801VfF...", "🔔 CC-oceanbus 回复：\n\n重构完成。修改了 src/user.ts, src/auth.ts")
-
-8  用户微信收到回复
+1. Agent 执行完毕 → ob.send(Gateway_OpenID, JSON回复)
+2. 网关 OB 监听器收到 → 提取 to_wx_user
+3. 网关 → client.sendText(wx用户, "🔔 Agent名 回复：\n\n结果")
+4. 微信收到
 ```
 
----
+## 四、会话模型
 
-## 四、路由表设计
+```
+/use /cc-svg           → 切换默认 Agent
+/cc-svg 重构代码        → 临时发给 CC-svg（不改变默认）
+重构代码                → 发给当前默认 Agent
+/who                   → 查看当前会话 + 所有 Agent
+/help                  → 完整命令列表
+/addroute /trae xxx    → 添加新 Agent
+/removeroute /trae     → 移除 Agent
+/default /cc           → 设全局默认
+```
 
-### 4.1 数据结构
+## 五、路由表
 
 ```json
 {
   "routes": {
     "/cc": {
-      "openId": "qMaPCuSjJjZYAEKYN_spK5_UADPCQ-wprIH5MNDo4u0Yayt6caKHIq4iHsuBAZLgFBXptlkH43_wHKOV",
-      "name": "CC-oceanbus",
+      "openId": "qMaPCuSjJjZYAEKYN_spK5...",
+      "name": "CC-qMaP",
       "type": "claude-code",
       "addedAt": "2026-05-13T08:00:00Z"
-    },
-    "/trae": {
-      "openId": "trae_agent_openid_here",
-      "name": "Trae-oceanbus",
-      "type": "trae",
-      "addedAt": "2026-05-13T09:00:00Z"
-    },
-    "/cursor": {
-      "openId": "cursor_agent_openid_here", 
-      "name": "Cursor-oceanbus",
-      "type": "cursor",
-      "addedAt": "2026-05-13T10:00:00Z"
     }
   },
-  "default": "/cc",
-  "gateway": {
-    "name": "WeChat Bot",
-    "obOpenId": "fkGrTF7xx6WRYCN0Z3gMJg3A8Mz_svOCF_3rK3d8MdCWgzYmMfSUDSX7O6pksCWMj2hF_tcKcApV49N0",
-    "wxUserId": "o9cq801VfFeQyUYAUsYdOXFUpuQg@im.wechat"
-  }
+  "default": "/cc"
 }
 ```
 
-### 4.2 路由规则
-
-| 用户输入 | 解析 | 路由到 |
-|---------|------|--------|
-| `/cc 重构代码` | prefix=/cc, body=重构代码 | CC Agent |
-| `/trae 打开文件` | prefix=/trae, body=打开文件 | Trae Agent |
-| `/cursor 跳转定义` | prefix=/cursor, body=跳转定义 | Cursor Agent |
-| `重构代码`（无前缀） | prefix=无, body=重构代码 | 默认 Agent（/cc） |
-| `/help` | 系统命令 | 返回可用前缀列表 |
-| `/addroute /xxx OpenID 名称` | 系统命令 | 添加路由项 |
-| `/routes` | 系统命令 | 返回路由表 |
-
----
-
-## 五、系统命令
-
-微信端可直接管理的网关命令（以 `/` 开头，网关自己处理，不转发给 Agent）：
-
-| 命令 | 功能 | 示例 |
-|------|------|------|
-| `/help` | 列出可用前缀和 Agent | `/help` |
-| `/routes` | 查看当前路由表 | `/routes` |
-| `/addroute /xxx OpenID 名称` | 添加新 Agent | `/addroute /trae trae_xxx Trae` |
-| `/removeroute /xxx` | 删除 Agent | `/removeroute /trae` |
-| `/default /xxx` | 设置默认 Agent | `/default /cc` |
-| `/status` | 查看连接状态 | `/status` |
-
----
-
-## 六、绑定流程
+## 六、自动命名
 
 ```
-用户扫码（仅一次）
-  → 微信授权
-    → 网关获取 ilink_user_id
-      → 保存绑定: { ilink_user_id → 默认路由 }
+优先级:
+  1. --name "CC-oceanbus"     → 手动指定
+  2. 都没指定                  → "CC-" + OpenID 前 4 位
+                                → "CC-qMaP"
 
-之后所有消息：
-  网关根据绑定 → 查路由 → 转发 Agent
+碰撞处理（概率 ~1/1600 万）:
+  /removeroute /cc-qMaP
+  /addroute /cc-qMaP-2 <OpenID> CC-qMaP-2
 ```
 
-**不再需要手动发 pair 命令。扫码即绑定。**
-
----
+OpenID 前 4 位是 OB 网络公开地址，暴露无风险。
 
 ## 七、身份模型
 
 ```
 ┌─────────────────────────────────────────┐
-│              微信侧身份                  │
-│  ilink_user_id: "o9cq801VfF..."         │
-│  绑定: { ilink_user_id → 默认路由 "/cc" }│
+│           微信侧绑定                      │
+│  ilink_user_id → 默认路由 "/cc"          │
+│  扫码即绑定，无需手动操作                   │
 ├─────────────────────────────────────────┤
-│              网关 OB 身份                │
-│  agent_id: "36de5627..."                │
-│  openid: "fkGrTF7xx6..."                │
+│           网关 OB 身份                    │
+│  "fkGrTF7xx6..."                        │
 │  路由表: {"/cc"→OB1, "/trae"→OB2, ...}  │
 ├─────────────────────────────────────────┤
-│           Agent OB 身份（多个）          │
-│  /cc:     "qMaPCuSjJjZ..."              │
+│        Agent OB 身份（多个）              │
+│  /cc:     "qMaP..."                     │
 │  /trae:   "trae_agent_..."              │
 │  /cursor: "cursor_agent_..."            │
 └─────────────────────────────────────────┘
 ```
 
----
+## 八、A 消息
 
-## 八、与 MCP Channel 的关系
+### 发给朋友（安装 CC Agent）
 
-MCP Channel 保留，但**降级为 Agent 的入向投递方式之一**。
-
-```
-OB 投递到 CC 后：
-  ├── 路径1：CC OB 监听器直接打印到终端（通用）
-  └── 路径2：MCP notification 注入 CC 会话（CC 专属优化）
+```bash
+if [ -d ocean-chat ]; then cd ocean-chat && git pull; else git clone https://github.com/ryanbihai/ocean-chat.git && cd ocean-chat; fi && npm install && npm install oceanbus@latest && node cc-agent.cjs --auto-exec
 ```
 
-Agent 自己决定如何接收 OB 消息。CC 可以用 MCP，Trae 可以用文件监听，Cursor 可以用 WebSocket。网关不关心。
+### 朋友告诉你 OB OpenID 后，你在微信添加路由
 
----
+```
+/addroute /朋友名 朋友的OpenID 朋友名-CC
+```
 
-## 九、实施变更
+### 朋友扫码绑定 Gateway
 
-| 模块 | 当前（v0.1.x） | 目标（v0.2.0） |
-|------|--------------|--------------|
-| 入向投递 | MCP notification（Path A） | **OB L0（Path B）** |
-| 出向投递 | MCP reply + OB 监听器 | **统一 OB 监听器** |
-| 路由 | 单一 CC | 前缀路由表，多 Agent |
-| 绑定 | loginSuccess 写 pairings | 扫码直接保存默认路由 |
-| 系统命令 | 无 | /help /routes /addroute |
-| MCP 角色 | 主通道 | 降级为 CC 专属适配 |
+你运行 Gateway 的 `pair-qr` 或让 Gateway 出新 QR，朋友用微信扫码。扫码后自动绑定，收到欢迎消息。
+
+## 九、多窗口
+
+每个窗口用不同 `--data-dir`，获得独立 OB 身份：
+
+```bash
+# 窗口 A
+node cc-agent.cjs --data-dir ~/project-a/.oceanbus-cc --auto-exec
+
+# 窗口 B
+node cc-agent.cjs --data-dir ~/project-b/.oceanbus-cc --auto-exec
+```
+
+微信 `/use /cc-xxxx` 切换窗口，或 `/cc-xxxx 消息` 临时发给指定窗口。
+
+## 十、欢迎消息
+
+扫码绑定后微信立即收到：
+
+```
+🎉 欢迎来到 OceanBus 网关！
+
+✅ 已自动绑定
+📍 当前会话: /cc
+
+可用 Agent:
+  /cc → CC-qMaP
+
+快速上手:
+  直接发消息 → 发给当前会话
+  /cc 消息 → 临时发给 /cc
+  /use /xxx → 切换默认会话
+  /who → 查看所有 Agent
+  /help → 完整命令列表
+```
+
+## 十一、技术栈
+
+| 层 | 技术 |
+|----|------|
+| 微信通信 | `weixin-bot-plugin` (iLink API) |
+| CC 集成 | `@modelcontextprotocol/sdk` (MCP 工具: login/reply/status/logout) |
+| P2P 路由 | `oceanbus` (L0: 身份 + 消息收发 + 监听) |
+| CC Agent | `cc-agent.cjs` (Node.js, spawn claude) |
+| 构建分发 | `bun build` → 单文件 `dist/index.js` |
