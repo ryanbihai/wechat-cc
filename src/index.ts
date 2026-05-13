@@ -64,6 +64,17 @@ function saveBotObCreds(data: unknown) {
 async function main() {
   log("wechat-cc channel starting...");
 
+  // 0. Detect conflict with weixin-claude-code
+  const CONFLICT_STATE_DIR = path.join(os.homedir(), ".claude", "channels", "wechat");
+  if (fs.existsSync(CONFLICT_STATE_DIR)) {
+    const conflictAccounts = path.join(CONFLICT_STATE_DIR, "accounts");
+    if (fs.existsSync(conflictAccounts) && fs.readdirSync(conflictAccounts).length > 0) {
+      log("WARNING: weixin-claude-code accounts detected. Both plugins will compete for WeChat messages.");
+      log("  To avoid conflicts, disable one plugin: /plugin disable weixin-claude-code@dcatfly-plugins");
+      log("  Or: /plugin disable wechat-cc@oceanbus-plugins");
+    }
+  }
+
   // 1. CC OB identity (load existing or create)
   let ccCreds = loadCcObCreds();
   let ccOpenId: string;

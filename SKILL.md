@@ -20,10 +20,29 @@ description: WeChat Channel for Claude Code — 微信扫码操控 CC，基于 O
 - 长消息自动拆条防折叠
 - ctrl+o 展开二维码提醒
 
+## A 消息（发给朋友）
+
+```
+/plugin marketplace add ryanbihai/claude-plugins && /plugin install wechat-cc@oceanbus-plugins
+```
+
+> 如果已安装过 oceanbus-plugins 市场，只需：`/plugin install wechat-cc@oceanbus-plugins`
+
+安装完成后**重启 Claude Code**，输入 `/login` 或直接说"登录微信"。
+
+## 冲突说明
+
+如果已安装 `weixin-claude-code@dcatfly-plugins`，两个插件会竞争同一个微信账号的消息。启动时 wechat-cc 会检测并警告。建议禁用其一：
+
+```
+/plugin disable weixin-claude-code@dcatfly-plugins
+```
+
 ## 安装
 
 ```
-/plugin marketplace add oceanbus/claude-plugins
+/plugin marketplace add ryanbihai/claude-plugins
+/plugin install wechat-cc@oceanbus-plugins
 /plugin install wechat-cc@oceanbus-plugins
 ```
 
