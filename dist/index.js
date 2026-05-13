@@ -46886,6 +46886,18 @@ async function main() {
         name: "logout",
         description: "\u767B\u51FA\u5FAE\u4FE1\uFF0C\u6E05\u9664\u51ED\u8BC1\u5E76\u505C\u6B62\u6D88\u606F\u63A5\u6536",
         inputSchema: { type: "object", properties: {} }
+      },
+      {
+        name: "_simulate",
+        description: "[\u6D4B\u8BD5] \u6A21\u62DF\u6536\u5230\u5FAE\u4FE1\u6D88\u606F\uFF0C\u53D1\u9001\u4E00\u6761 MCP Channel notification",
+        inputSchema: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "\u6A21\u62DF\u6D88\u606F\u6587\u672C" },
+            chat_id: { type: "string", description: "\u6A21\u62DF\u53D1\u9001\u8005 ID" }
+          },
+          required: ["text"]
+        }
       }
     ]
   }));
@@ -46966,6 +46978,25 @@ ${result.message}` : `${result.message}
         log(`logout: ${s2.accountId}`);
         return { content: [{ type: "text", text: `\u5DF2\u767B\u51FA\u5FAE\u4FE1\u8D26\u53F7 ${s2.accountId}\uFF0C\u51ED\u8BC1\u548C\u914D\u5BF9\u5DF2\u6E05\u9664\u3002` }] };
       }
+      case "_simulate": {
+        const text = args.text || "\u6A21\u62DF\u6D88\u606F";
+        const chatId = args.chat_id || "test_user_123";
+        log(`_simulate: sending MCP notification for "${text}" from ${chatId}`);
+        try {
+          await server.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: text,
+              meta: { type: "message", chat_id: chatId, sender: chatId }
+            }
+          });
+          log(`_simulate: notification sent successfully`);
+          return { content: [{ type: "text", text: `\u2705 \u6A21\u62DF\u6D88\u606F\u5DF2\u53D1\u9001: "${text}" (from: ${chatId})\u3002\u68C0\u67E5 CC \u4F1A\u8BDD\u4E2D\u662F\u5426\u51FA\u73B0\u8FD9\u6761\u6D88\u606F\u3002` }] };
+        } catch (e) {
+          log(`_simulate: notification failed: ${e.message}`);
+          return { content: [{ type: "text", text: `\u274C \u53D1\u9001\u5931\u8D25: ${e.message}` }] };
+        }
+      }
       default:
         throw new Error(`unknown tool: ${name}`);
     }
@@ -47033,6 +47064,7 @@ ${params.description}
     }
     client.startTyping(msg.chatId);
     const meta3 = {
+      type: "message",
       chat_id: msg.chatId,
       sender: msg.chatId
     };

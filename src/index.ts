@@ -184,6 +184,18 @@ async function main() {
         description: "登出微信，清除凭证并停止消息接收",
         inputSchema: { type: "object" as const, properties: {} },
       },
+      {
+        name: "_simulate",
+        description: "[测试] 模拟收到微信消息，发送一条 MCP Channel notification",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            text: { type: "string", description: "模拟消息文本" },
+            chat_id: { type: "string", description: "模拟发送者 ID" },
+          },
+          required: ["text"],
+        },
+      },
     ],
   }));
 
@@ -258,6 +270,25 @@ async function main() {
         try { fs.unlinkSync(PAIRING_FILE); } catch (_) {}
         log(`logout: ${s.accountId}`);
         return { content: [{ type: "text" as const, text: `已登出微信账号 ${s.accountId}，凭证和配对已清除。` }] };
+      }
+      case "_simulate": {
+        const text = args.text || "模拟消息";
+        const chatId = args.chat_id || "test_user_123";
+        log(`_simulate: sending MCP notification for "${text}" from ${chatId}`);
+        try {
+          await server.notification({
+            method: "notifications/claude/channel",
+            params: {
+              content: text,
+              meta: { type: "message", chat_id: chatId, sender: chatId },
+            },
+          });
+          log(`_simulate: notification sent successfully`);
+          return { content: [{ type: "text" as const, text: `✅ 模拟消息已发送: "${text}" (from: ${chatId})。检查 CC 会话中是否出现这条消息。` }] };
+        } catch (e: any) {
+          log(`_simulate: notification failed: ${e.message}`);
+          return { content: [{ type: "text" as const, text: `❌ 发送失败: ${e.message}` }] };
+        }
       }
       default:
         throw new Error(`unknown tool: ${name}`);
@@ -336,6 +367,7 @@ async function main() {
     // Normal message → push to CC via MCP channel notification
     client.startTyping(msg.chatId);
     const meta: Record<string, string> = {
+      type: "message",
       chat_id: msg.chatId,
       sender: msg.chatId,
     };

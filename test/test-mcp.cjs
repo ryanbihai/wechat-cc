@@ -131,7 +131,31 @@ async function main() {
   const status = JSON.parse(statusText);
   console.log(`   Status: wechat=${status.wechat_connected}, paired=${status.paired}, cc=${status.cc_openid}, bot=${status.bot_openid}`);
 
-  // 5. Check for login prompt notification
+  // 5. Call _simulate to test message notification
+  const simText = '测试消息-模拟微信发送';
+  const simChatId = 'test_user_789';
+  console.log(`\n→ _simulate("${simText}", "${simChatId}")`);
+  const preSimCount = notificationCount;
+  send('tools/call', { name: '_simulate', arguments: { text: simText, chat_id: simChatId } });
+  const simResp = await waitForResponse(5000);
+  if (!simResp || simResp.error) fail(`_simulate failed: ${JSON.stringify(simResp?.error)}`);
+  console.log(`   Result: ${simResp.result?.content?.[0]?.text || ''}`);
+
+  // Wait for notification
+  await new Promise(r => setTimeout(r, 1000));
+
+  // Check if simulation notification arrived
+  if (notificationCount > preSimCount) {
+    const simNotif = notifications[notifications.length - 1];
+    ok(`_simulate notification received: type=${simNotif.params?.meta?.type || 'none'}`);
+    if (simNotif.params?.meta?.type === 'message') ok('type=message ✅');
+    if (simNotif.params?.meta?.chat_id === simChatId) ok(`chat_id=${simChatId} ✅`);
+    if (simNotif.params?.content === simText) ok(`content="${simText}" ✅`);
+  } else {
+    fail('_simulate did NOT generate a notification');
+  }
+
+  // 6. Check for login prompt notification
   // Server should send a notification when no accounts exist
   console.log(`\n📊 Notifications received: ${notificationCount}`);
   if (notificationCount > 0) {
@@ -146,16 +170,22 @@ async function main() {
     console.log('   ⚠️  No notifications yet (may have existing session)');
   }
 
-  // 6. Summary
+  // 7. Summary
   console.log('\n📋 测试结果:');
   console.log('   ✅ Server starts');
   console.log('   ✅ MCP initialize');
-  console.log('   ✅ Tools registered (login, reply, status, logout)');
+  console.log('   ✅ Tools registered (login, reply, status, logout, _simulate)');
   console.log('   ✅ Status returns valid JSON');
+  console.log('   ✅ _simulate tool works');
   if (notificationCount > 0) {
     console.log('   ✅ MCP notifications working');
   }
   console.log('   ⚠️  login/reply 需要真实微信扫码，无法自动化测试');
+  console.log('\n📋 消息链路:');
+  console.log('   WeChat → iLink → weixin-bot-plugin → "message" event');
+  console.log('   → handler → server.notification({method:"notifications/claude/channel"');
+  console.log('     params:{content, meta:{type:"message",chat_id,sender}})');
+  console.log('   → MCP stdio → CC 接收 → 显示在会话中');
 
   if (stderr.includes('ERROR') || stderr.includes('fatal')) {
     console.log('\n⚠️  stderr 有错误:');
