@@ -32,6 +32,7 @@ const STATE_DIR = path.join(os.homedir(), ".claude", "channels", "wechat-cc");
 const ROUTES_FILE = path.join(STATE_DIR, "routes.json");
 const BINDING_FILE = path.join(STATE_DIR, "binding.json");
 const BOT_OB_FILE = path.join(STATE_DIR, "bot-ob.json");
+const WX_IDENTITY_FILE = path.join(STATE_DIR, "wx-identity.json");
 const CC_CRED_FILE = path.join(os.homedir(), ".oceanbus-chat", "credentials.json");
 
 function ensureDir() { fs.mkdirSync(STATE_DIR, { recursive: true }); }
@@ -67,6 +68,7 @@ function lookupRoute(prefix: string, rt: RouteTable): RouteEntry | null {
 // ── Binding ────────────────────────────────────────────────────
 interface Binding {
   ilinkUserId: string;
+  wxOpenId?: string;
   defaultRoute: string;
   boundAt: string;
 }
@@ -93,6 +95,11 @@ function loadBotObCreds() {
   return null;
 }
 function saveBotObCreds(data: unknown) { ensureDir(); fs.writeFileSync(BOT_OB_FILE, JSON.stringify(data, null, 2), "utf-8"); }
+function loadWxIdentity() {
+  try { if (fs.existsSync(WX_IDENTITY_FILE)) return JSON.parse(fs.readFileSync(WX_IDENTITY_FILE, "utf-8")); } catch (_) {}
+  return null;
+}
+function saveWxIdentity(data: unknown) { ensureDir(); fs.writeFileSync(WX_IDENTITY_FILE, JSON.stringify(data, null, 2), "utf-8"); }
 
 // ── Session State (Model C) ───────────────────────────────────
 interface SessionState {
@@ -129,6 +136,11 @@ function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): st
       getSession(wxUserId).current = prefix;
       return `✅ 已切换到 ${prefix} → ${rt.routes[prefix].name}`;
     }
+    case "/myid": {
+      const wxId = loadWxIdentity();
+      if (!wxId?.openid) return "微信 OB 身份尚未注册。请先扫码登录。";
+      return `你的微信 OB OpenID:\n\n${wxId.openid}\n\nAgent 用这个地址连接你，不需要扫码。`;
+    }
     case "/who": {
       const session = getSession(wxUserId);
       const route = rt.routes[session.current];
@@ -136,7 +148,9 @@ function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): st
       const all = Object.keys(rt.routes).map(p =>
         p === session.current ? `* ${p} → ${rt.routes[p].name}` : `  ${p} → ${rt.routes[p].name}`
       ).join("\n");
-      return `当前会话: ${info}\n\n所有 Agent:\n${all}`;
+      const wxId = loadWxIdentity();
+      const wxLine = wxId?.openid ? `\n📱 你的微信 OB: ${wxId.openid.slice(0, 5)}... (发给agent管理员即可连接)` : '';
+      return `当前会话: ${info}\n\n所有 Agent:\n${all}${wxLine}`;
     }
     case "/routes": {
       const entries = Object.entries(rt.routes);
@@ -343,6 +357,25 @@ async function main() {
   }
   const botOpenId = botObCreds?.openid || "";
 
+  // 2b. WeChat user OB identity (permanent, survives iLink session expiry)
+  let wxIdentity = loadWxIdentity();
+  if (!wxIdentity?.openid) {
+    log("Registering WeChat user OB identity...");
+    try {
+      const oceanbus = await import("oceanbus");
+      const ob = await oceanbus.createOceanBus({ keyStore: { type: "memory" } });
+      const reg = await ob.createIdentity();
+      const openid = await ob.getAddress();
+      wxIdentity = { agent_id: reg.agent_id, api_key: reg.api_key, openid, created_at: new Date().toISOString() };
+      saveWxIdentity(wxIdentity);
+      log(`wxOpenId created: ${openid.slice(0, 5)}...`);
+      await ob.destroy();
+    } catch (e: any) { log(`wxOpenId registration failed: ${e.message}`); }
+  } else {
+    log(`wxOpenId: ${wxIdentity.openid.slice(0, 5)}...`);
+  }
+  const wxOpenId = wxIdentity?.openid || "";
+
   // 3. Auto-add CC to route table if not present
   if (ccOpenId && !rt.routes["/cc"]) {
     rt.routes["/cc"] = {
@@ -377,10 +410,35 @@ async function main() {
         if (msg.from_openid === botOpenId) return;
         const content: string = msg.content || "";
         let parsed: any;
-        try { parsed = JSON.parse(content); } catch (_) { parsed = { text: content }; }
-        const toWxUser = parsed.meta?.to_wx_user || "";
+        try { parsed = JSON.parse(content); } catch (_) { parsed = { action: "reply", text: content }; }
+
+        const action = parsed.action || "reply";
+        const meta = parsed.meta || {};
+
+        // Agent announces itself → auto-add route
+        if (action === "announce") {
+          const agentName = meta.agent_name || ("Agent-" + msg.from_openid.slice(0, 4));
+          const agentOpenId = meta.agent_openid || msg.from_openid;
+          const prefix = "/" + agentName.toLowerCase().replace(/\s+/g, '-');
+          rt = loadRoutes();
+          if (!rt.routes[prefix]) {
+            rt.routes[prefix] = { openId: agentOpenId, name: agentName, type: meta.agent_type || "agent", addedAt: new Date().toISOString() };
+            if (!rt.default) rt.default = prefix;
+            saveRoutes(rt);
+            log(`[announce] auto-added route: ${prefix} → ${agentName} (${agentOpenId.slice(0, 5)}...)`);
+            // Notify WeChat user
+            const binding = loadBinding();
+            if (binding?.ilinkUserId) {
+              client.sendText(binding.ilinkUserId, `🔔 ${agentName} 已连接！\n使用 /use ${prefix} 切换为主Agent\n或直接 /${agentName.toLowerCase().replace(/\s+/g, '-')} 消息发送指令`).catch(() => {});
+            }
+          }
+          return;
+        }
+
+        // Normal reply: forward to WeChat
+        const toWxUser = meta.to_wx_user || "";
         const replyText = parsed.text || content;
-        const agentName = parsed.meta?.agent_name || "Agent";
+        const agentName = meta.agent_name || "Agent";
 
         if (toWxUser) {
           log(`[←OB] Agent → WeChat ${toWxUser.slice(0, 12)}...`);
@@ -398,20 +456,22 @@ async function main() {
     log(`login success: ${accountId}`);
     const s = client.getStatus();
     if (s.userId) {
-      saveBinding({ ilinkUserId: s.userId, defaultRoute: rt.default, boundAt: new Date().toISOString() });
-      log(`bound: ${s.userId.slice(0, 12)}... → default ${rt.default}`);
+      saveBinding({ ilinkUserId: s.userId, wxOpenId, defaultRoute: rt.default, boundAt: new Date().toISOString() });
+      log(`bound: ${s.userId.slice(0, 12)}... ↔ wxOpenId ${wxOpenId.slice(0, 5)}... → default ${rt.default}`);
       const routesList = Object.keys(rt.routes).map(p => `  ${p} → ${rt.routes[p].name}`).join("\n");
       client.sendText(s.userId,
         `🎉 欢迎来到 OceanBus 网关！\n\n` +
         `✅ 已自动绑定\n` +
-        `📍 当前会话: ${rt.default}\n\n` +
+        `📍 当前会话: ${rt.default}\n` +
+        `📱 你的微信 OB OpenID: ${wxOpenId.slice(0, 5)}...\n\n` +
         `可用 Agent:\n${routesList || "  (暂无)"}\n\n` +
         `快速上手:\n` +
         `  直接发消息 → 发给当前会话\n` +
-        `  /cc 消息 → 临时发给 /cc\n` +
+        `  /myid → 查看你的微信 OB 地址\n` +
         `  /use /xxx → 切换默认会话\n` +
         `  /who → 查看所有 Agent\n` +
-        `  /help → 完整命令列表`
+        `  /help → 完整命令列表\n\n` +
+        `💡 让 Agent 管理员把你的 wxOpenId 发给 Agent，Agent 启动时自动连接，不需要扫码。`
       ).catch(() => {});
     }
   });

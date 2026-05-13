@@ -46757,6 +46757,7 @@ var STATE_DIR = path.join(os.homedir(), ".claude", "channels", "wechat-cc");
 var ROUTES_FILE = path.join(STATE_DIR, "routes.json");
 var BINDING_FILE = path.join(STATE_DIR, "binding.json");
 var BOT_OB_FILE = path.join(STATE_DIR, "bot-ob.json");
+var WX_IDENTITY_FILE = path.join(STATE_DIR, "wx-identity.json");
 var CC_CRED_FILE = path.join(os.homedir(), ".oceanbus-chat", "credentials.json");
 function ensureDir() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -46804,6 +46805,17 @@ function saveBotObCreds(data) {
   ensureDir();
   fs.writeFileSync(BOT_OB_FILE, JSON.stringify(data, null, 2), "utf-8");
 }
+function loadWxIdentity() {
+  try {
+    if (fs.existsSync(WX_IDENTITY_FILE))
+      return JSON.parse(fs.readFileSync(WX_IDENTITY_FILE, "utf-8"));
+  } catch (_2) {}
+  return null;
+}
+function saveWxIdentity(data) {
+  ensureDir();
+  fs.writeFileSync(WX_IDENTITY_FILE, JSON.stringify(data, null, 2), "utf-8");
+}
 var sessions = {};
 function getSession(wxUserId) {
   if (!sessions[wxUserId]) {
@@ -46846,16 +46858,29 @@ ${list}
       getSession(wxUserId).current = prefix;
       return `\u2705 \u5DF2\u5207\u6362\u5230 ${prefix} \u2192 ${rt2.routes[prefix].name}`;
     }
+    case "/myid": {
+      const wxId = loadWxIdentity();
+      if (!wxId?.openid)
+        return "\u5FAE\u4FE1 OB \u8EAB\u4EFD\u5C1A\u672A\u6CE8\u518C\u3002\u8BF7\u5148\u626B\u7801\u767B\u5F55\u3002";
+      return `\u4F60\u7684\u5FAE\u4FE1 OB OpenID:
+
+${wxId.openid}
+
+Agent \u7528\u8FD9\u4E2A\u5730\u5740\u8FDE\u63A5\u4F60\uFF0C\u4E0D\u9700\u8981\u626B\u7801\u3002`;
+    }
     case "/who": {
       const session = getSession(wxUserId);
       const route = rt2.routes[session.current];
       const info = route ? `${session.current} \u2192 ${route.name}` : session.current;
       const all = Object.keys(rt2.routes).map((p) => p === session.current ? `* ${p} \u2192 ${rt2.routes[p].name}` : `  ${p} \u2192 ${rt2.routes[p].name}`).join(`
 `);
+      const wxId = loadWxIdentity();
+      const wxLine = wxId?.openid ? `
+\uD83D\uDCF1 \u4F60\u7684\u5FAE\u4FE1 OB: ${wxId.openid.slice(0, 5)}... (\u53D1\u7ED9agent\u7BA1\u7406\u5458\u5373\u53EF\u8FDE\u63A5)` : "";
       return `\u5F53\u524D\u4F1A\u8BDD: ${info}
 
 \u6240\u6709 Agent:
-${all}`;
+${all}${wxLine}`;
     }
     case "/routes": {
       const entries = Object.entries(rt2.routes);
@@ -47063,6 +47088,25 @@ async function main() {
     await ob.destroy();
   }
   const botOpenId = botObCreds?.openid || "";
+  let wxIdentity = loadWxIdentity();
+  if (!wxIdentity?.openid) {
+    log("Registering WeChat user OB identity...");
+    try {
+      const oceanbus = await Promise.resolve().then(() => __toESM(require_dist3(), 1));
+      const ob = await oceanbus.createOceanBus({ keyStore: { type: "memory" } });
+      const reg = await ob.createIdentity();
+      const openid = await ob.getAddress();
+      wxIdentity = { agent_id: reg.agent_id, api_key: reg.api_key, openid, created_at: new Date().toISOString() };
+      saveWxIdentity(wxIdentity);
+      log(`wxOpenId created: ${openid.slice(0, 5)}...`);
+      await ob.destroy();
+    } catch (e) {
+      log(`wxOpenId registration failed: ${e.message}`);
+    }
+  } else {
+    log(`wxOpenId: ${wxIdentity.openid.slice(0, 5)}...`);
+  }
+  const wxOpenId = wxIdentity?.openid || "";
   if (ccOpenId && !rt2.routes["/cc"]) {
     rt2.routes["/cc"] = {
       openId: ccOpenId,
@@ -47097,11 +47141,33 @@ async function main() {
         try {
           parsed = JSON.parse(content);
         } catch (_2) {
-          parsed = { text: content };
+          parsed = { action: "reply", text: content };
         }
-        const toWxUser = parsed.meta?.to_wx_user || "";
+        const action = parsed.action || "reply";
+        const meta3 = parsed.meta || {};
+        if (action === "announce") {
+          const agentName2 = meta3.agent_name || "Agent-" + msg.from_openid.slice(0, 4);
+          const agentOpenId = meta3.agent_openid || msg.from_openid;
+          const prefix = "/" + agentName2.toLowerCase().replace(/\s+/g, "-");
+          rt2 = loadRoutes();
+          if (!rt2.routes[prefix]) {
+            rt2.routes[prefix] = { openId: agentOpenId, name: agentName2, type: meta3.agent_type || "agent", addedAt: new Date().toISOString() };
+            if (!rt2.default)
+              rt2.default = prefix;
+            saveRoutes(rt2);
+            log(`[announce] auto-added route: ${prefix} \u2192 ${agentName2} (${agentOpenId.slice(0, 5)}...)`);
+            const binding2 = loadBinding();
+            if (binding2?.ilinkUserId) {
+              client.sendText(binding2.ilinkUserId, `\uD83D\uDD14 ${agentName2} \u5DF2\u8FDE\u63A5\uFF01
+\u4F7F\u7528 /use ${prefix} \u5207\u6362\u4E3A\u4E3BAgent
+\u6216\u76F4\u63A5 /${agentName2.toLowerCase().replace(/\s+/g, "-")} \u6D88\u606F\u53D1\u9001\u6307\u4EE4`).catch(() => {});
+            }
+          }
+          return;
+        }
+        const toWxUser = meta3.to_wx_user || "";
         const replyText = parsed.text || content;
-        const agentName = parsed.meta?.agent_name || "Agent";
+        const agentName = meta3.agent_name || "Agent";
         if (toWxUser) {
           log(`[\u2190OB] Agent \u2192 WeChat ${toWxUser.slice(0, 12)}...`);
           try {
@@ -47122,24 +47188,27 @@ ${replyText}`);
     log(`login success: ${accountId}`);
     const s2 = client.getStatus();
     if (s2.userId) {
-      saveBinding({ ilinkUserId: s2.userId, defaultRoute: rt2.default, boundAt: new Date().toISOString() });
-      log(`bound: ${s2.userId.slice(0, 12)}... \u2192 default ${rt2.default}`);
+      saveBinding({ ilinkUserId: s2.userId, wxOpenId, defaultRoute: rt2.default, boundAt: new Date().toISOString() });
+      log(`bound: ${s2.userId.slice(0, 12)}... \u2194 wxOpenId ${wxOpenId.slice(0, 5)}... \u2192 default ${rt2.default}`);
       const routesList = Object.keys(rt2.routes).map((p) => `  ${p} \u2192 ${rt2.routes[p].name}`).join(`
 `);
       client.sendText(s2.userId, `\uD83C\uDF89 \u6B22\u8FCE\u6765\u5230 OceanBus \u7F51\u5173\uFF01
 
 ` + `\u2705 \u5DF2\u81EA\u52A8\u7ED1\u5B9A
 ` + `\uD83D\uDCCD \u5F53\u524D\u4F1A\u8BDD: ${rt2.default}
+` + `\uD83D\uDCF1 \u4F60\u7684\u5FAE\u4FE1 OB OpenID: ${wxOpenId.slice(0, 5)}...
 
 ` + `\u53EF\u7528 Agent:
 ${routesList || "  (\u6682\u65E0)"}
 
 ` + `\u5FEB\u901F\u4E0A\u624B:
 ` + `  \u76F4\u63A5\u53D1\u6D88\u606F \u2192 \u53D1\u7ED9\u5F53\u524D\u4F1A\u8BDD
-` + `  /cc \u6D88\u606F \u2192 \u4E34\u65F6\u53D1\u7ED9 /cc
+` + `  /myid \u2192 \u67E5\u770B\u4F60\u7684\u5FAE\u4FE1 OB \u5730\u5740
 ` + `  /use /xxx \u2192 \u5207\u6362\u9ED8\u8BA4\u4F1A\u8BDD
 ` + `  /who \u2192 \u67E5\u770B\u6240\u6709 Agent
-` + `  /help \u2192 \u5B8C\u6574\u547D\u4EE4\u5217\u8868`).catch(() => {});
+` + `  /help \u2192 \u5B8C\u6574\u547D\u4EE4\u5217\u8868
+
+` + `\uD83D\uDCA1 \u8BA9 Agent \u7BA1\u7406\u5458\u628A\u4F60\u7684 wxOpenId \u53D1\u7ED9 Agent\uFF0CAgent \u542F\u52A8\u65F6\u81EA\u52A8\u8FDE\u63A5\uFF0C\u4E0D\u9700\u8981\u626B\u7801\u3002`).catch(() => {});
     }
   });
   client.on("message", async (msg) => {

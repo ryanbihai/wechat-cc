@@ -25,9 +25,10 @@ function getArg(name) {
   return (idx >= 0 && idx + 1 < process.argv.length) ? process.argv[idx + 1] : null;
 }
 
-const DATA_DIR = getArg('--data-dir') || path.join(os.homedir(), '.wechat-cc-standalone');
+const DATA_DIR = getArg('--data-dir') || path.join(os.homedir(), '.oceanbus-chat');
 const CRED_FILE = path.join(DATA_DIR, 'credentials.json');
 const STATE_DIR = path.join(DATA_DIR, 'wechat-state');
+const WX_OPENID = getArg('--wx');  // 微信用户的 OB OpenID
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -56,7 +57,25 @@ async function main() {
   const agentName = getArg('--name') || ('CC-' + creds.openid.slice(0, 4));
   console.log('   名称:    ' + agentName);
   console.log('   OpenID:  ' + creds.openid.slice(0, 5) + '...');
-  console.log('');
+  // Announce to WeChat user if wxOpenId provided
+  if (WX_OPENID) {
+    try {
+      const ob = await createOceanBus({
+        keyStore: { type: 'memory' },
+        identity: { agent_id: creds.agent_id, api_key: creds.api_key, openid: creds.openid },
+      });
+      await ob.send(WX_OPENID, JSON.stringify({
+        action: 'announce',
+        meta: { agent_name: agentName, agent_openid: creds.openid, agent_type: 'claude-code' },
+      }));
+      await ob.destroy();
+      console.log('📡 已向微信网关发送 announce: ' + agentName);
+      console.log('');
+    } catch (e) {
+      console.log('⚠️  announce 发送失败: ' + e.message);
+      console.log('');
+    }
+  }
 
   // 2. WeixinBotClient (ESM-only, dynamic import)
   const { WeixinBotClient } = await import('weixin-bot-plugin');
@@ -106,7 +125,8 @@ async function main() {
     }
   });
 
-  // 5. Event: message → spawn claude → reply
+  // 5. Event: message → relay to Claude Code via OB L0
+  //    The current CC window (with full project context) processes it.
   client.on('message', async (msg) => {
     const text = (msg.text || '').trim();
     if (!text) return;
@@ -114,32 +134,27 @@ async function main() {
 
     client.startTyping(msg.chatId);
 
-    // Spawn claude
+    // Forward to Claude Code via OB L0
     try {
-      const result = await new Promise((resolve, reject) => {
-        const child = spawn('claude', ['-p', text, '--dangerously-skip-permissions'], {
-          cwd: process.cwd(),
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        const timer = setTimeout(() => { child.kill(); reject(new Error('执行超时 (5 分钟)')); }, 300000);
-        let out = '', err = '';
-        child.stdout.on('data', d => out += d);
-        child.stderr.on('data', d => err += d);
-        child.on('close', code => {
-          clearTimeout(timer);
-          if (code === 0 && out.trim()) resolve(out.trim());
-          else reject(new Error(err.trim() || `exit ${code}`));
-        });
-        child.on('error', e => { clearTimeout(timer); reject(e); });
+      const ob = await createOceanBus({
+        keyStore: { type: 'memory' },
+        identity: { agent_id: creds.agent_id, api_key: creds.api_key, openid: creds.openid },
       });
-
-      console.log('[完成]');
-      await client.sendText(msg.chatId, `🔔 ${agentName} 回复：\n\n${result}`);
-      client.stopTyping(msg.chatId);
+      await ob.send(creds.openid, JSON.stringify({
+        action: 'command',
+        text,
+        meta: {
+          from_wx_user: msg.chatId,
+          agent_name: agentName,
+          message_id: `wx_${Date.now()}`,
+        },
+      }));
+      await ob.destroy();
+      console.log('[→OB] ' + text.slice(0, 60));
+      await client.sendText(msg.chatId, `已转发给 ${agentName}，等待回复...`);
     } catch (e) {
-      console.error('[失败] ' + e.message);
-      await client.sendText(msg.chatId, `❌ 执行失败: ${e.message}`);
-      client.stopTyping(msg.chatId);
+      console.error('[OB发送失败] ' + e.message);
+      await client.sendText(msg.chatId, `发送失败: ${e.message}`);
     }
   });
 
