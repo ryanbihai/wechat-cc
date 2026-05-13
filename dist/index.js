@@ -46754,23 +46754,38 @@ function log(msg) {
 `);
 }
 var STATE_DIR = path.join(os.homedir(), ".claude", "channels", "wechat-cc");
-var PAIRING_FILE = path.join(STATE_DIR, "pairing.json");
-function ensureStateDir() {
+var ROUTES_FILE = path.join(STATE_DIR, "routes.json");
+var BINDING_FILE = path.join(STATE_DIR, "binding.json");
+var BOT_OB_FILE = path.join(STATE_DIR, "bot-ob.json");
+var CC_CRED_FILE = path.join(os.homedir(), ".oceanbus-chat", "credentials.json");
+function ensureDir() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
 }
-function loadPairing() {
+function loadRoutes() {
   try {
-    if (fs.existsSync(PAIRING_FILE))
-      return JSON.parse(fs.readFileSync(PAIRING_FILE, "utf-8"));
+    if (fs.existsSync(ROUTES_FILE))
+      return JSON.parse(fs.readFileSync(ROUTES_FILE, "utf-8"));
   } catch (_2) {}
-  return {};
+  return { routes: {}, default: "" };
 }
-function savePairing(data) {
-  ensureStateDir();
-  fs.writeFileSync(PAIRING_FILE, JSON.stringify(data, null, 2), "utf-8");
+function saveRoutes(rt2) {
+  ensureDir();
+  fs.writeFileSync(ROUTES_FILE, JSON.stringify(rt2, null, 2), "utf-8");
 }
-var CC_CRED_FILE = path.join(os.homedir(), ".oceanbus-chat", "credentials.json");
-var BOT_OB_FILE = path.join(STATE_DIR, "bot-ob.json");
+function lookupRoute(prefix, rt2) {
+  return rt2.routes[prefix] || null;
+}
+function loadBinding() {
+  try {
+    if (fs.existsSync(BINDING_FILE))
+      return JSON.parse(fs.readFileSync(BINDING_FILE, "utf-8"));
+  } catch (_2) {}
+  return null;
+}
+function saveBinding(b2) {
+  ensureDir();
+  fs.writeFileSync(BINDING_FILE, JSON.stringify(b2, null, 2), "utf-8");
+}
 function loadCcObCreds() {
   try {
     if (fs.existsSync(CC_CRED_FILE))
@@ -46786,77 +46801,86 @@ function loadBotObCreds() {
   return null;
 }
 function saveBotObCreds(data) {
-  ensureStateDir();
+  ensureDir();
   fs.writeFileSync(BOT_OB_FILE, JSON.stringify(data, null, 2), "utf-8");
 }
-async function main() {
-  log("wechat-cc channel starting...");
-  const CONFLICT_STATE_DIR = path.join(os.homedir(), ".claude", "channels", "wechat");
-  if (fs.existsSync(CONFLICT_STATE_DIR)) {
-    const conflictAccounts = path.join(CONFLICT_STATE_DIR, "accounts");
-    if (fs.existsSync(conflictAccounts) && fs.readdirSync(conflictAccounts).length > 0) {
-      log("WARNING: weixin-claude-code accounts detected. Both plugins will compete for WeChat messages.");
-      log("  To avoid conflicts, disable one plugin: /plugin disable weixin-claude-code@dcatfly-plugins");
-      log("  Or: /plugin disable wechat-cc@oceanbus-plugins");
+function handleSystemCommand(text, wxUserId, rt2) {
+  const parts = text.trim().split(/\s+/);
+  switch (parts[0]) {
+    case "/help": {
+      const prefixes = Object.keys(rt2.routes);
+      const list = prefixes.length > 0 ? prefixes.map((p) => `  ${p} \u2192 ${rt2.routes[p].name} (${rt2.routes[p].openId.slice(0, 5)}...)`).join(`
+`) : "  (\u65E0)";
+      const def = rt2.default || "(\u672A\u8BBE\u7F6E)";
+      return `\u53EF\u7528 Agent:
+${list}
+
+\u9ED8\u8BA4: ${def}
+
+\u7CFB\u7EDF\u547D\u4EE4: /help /routes /addroute /removeroute /default /status`;
     }
-  }
-  let ccCreds = loadCcObCreds();
-  let ccOpenId;
-  if (ccCreds?.openid) {
-    ccOpenId = ccCreds.openid;
-    log(`CC OB identity: ${ccOpenId.slice(0, 5)}...`);
-  } else {
-    log("CC OB identity not found \u2014 will be created on first OB use");
-    ccOpenId = "";
-  }
-  let botObCreds = loadBotObCreds();
-  if (!botObCreds?.openid) {
-    log("Registering Bot OB identity...");
-    const oceanbus = await Promise.resolve().then(() => __toESM(require_dist3(), 1));
-    const ob = await oceanbus.createOceanBus({ keyStore: { type: "memory" } });
-    try {
-      const reg = await ob.createIdentity();
-      const openid = await ob.getAddress();
-      botObCreds = {
-        agent_id: reg.agent_id,
-        api_key: reg.api_key,
-        openid,
-        created_at: new Date().toISOString()
-      };
-      saveBotObCreds(botObCreds);
-      log(`Bot OB identity created: ${openid.slice(0, 5)}...`);
-    } catch (e) {
-      log(`Bot OB registration failed: ${e.message}`);
-      await ob.destroy();
+    case "/routes": {
+      const entries = Object.entries(rt2.routes);
+      if (entries.length === 0)
+        return "\u8DEF\u7531\u8868\u4E3A\u7A7A\u3002\u4F7F\u7528 /addroute /xxx OpenID \u540D\u79F0 \u6DFB\u52A0\u3002";
+      return entries.map(([k2, v2]) => `${k2} \u2192 ${v2.name} (${v2.openId.slice(0, 5)}...)`).join(`
+`) + `
+
+\u9ED8\u8BA4: ${rt2.default || "(\u672A\u8BBE\u7F6E)"}`;
     }
-    await ob.destroy();
-  }
-  const botOpenId = botObCreds?.openid || "";
-  const pairings = {};
-  (function loadPairingsIntoMemory() {
-    const p = loadPairing();
-    if (p.ilinkUserId && p.ccOpenId) {
-      pairings[p.ilinkUserId] = { ccOpenId: p.ccOpenId, ccName: "CC" };
-      log(`loaded pairing: ${p.ilinkUserId.slice(0, 12)}... \u2194 ${p.ccOpenId.slice(0, 5)}...`);
+    case "/addroute": {
+      if (parts.length < 4)
+        return `\u7528\u6CD5: /addroute /xxx OpenID \u540D\u79F0
+\u4F8B\u5982: /addroute /trae trae_openid_xxx Trae`;
+      const prefix = parts[1];
+      if (!prefix.startsWith("/"))
+        return "\u524D\u7F00\u5FC5\u987B\u4EE5 / \u5F00\u5934\uFF0C\u4F8B\u5982 /trae";
+      const openId = parts[2];
+      const name = parts.slice(3).join(" ");
+      rt2.routes[prefix] = { openId, name, addedAt: new Date().toISOString() };
+      if (!rt2.default)
+        rt2.default = prefix;
+      saveRoutes(rt2);
+      return `\u2705 \u5DF2\u6DFB\u52A0\u8DEF\u7531: ${prefix} \u2192 ${name} (${openId.slice(0, 5)}...)`;
     }
-  })();
-  const client = new xe({
-    stateDir: path.join(STATE_DIR, "wechat"),
-    tempDir: path.join(os.tmpdir(), "wechat-cc"),
-    clientIdPrefix: "wechat-cc"
-  });
-  await client.cleanupTempMedia().catch((err2) => log(`temp cleanup failed: ${String(err2)}`));
+    case "/removeroute": {
+      if (parts.length < 2)
+        return "\u7528\u6CD5: /removeroute /xxx";
+      const prefix = parts[1];
+      if (!rt2.routes[prefix])
+        return `\u8DEF\u7531\u4E0D\u5B58\u5728: ${prefix}`;
+      const removed = rt2.routes[prefix];
+      delete rt2.routes[prefix];
+      if (rt2.default === prefix) {
+        const remaining = Object.keys(rt2.routes);
+        rt2.default = remaining.length > 0 ? remaining[0] : "";
+      }
+      saveRoutes(rt2);
+      return `\u2705 \u5DF2\u79FB\u9664: ${prefix} \u2192 ${removed.name}`;
+    }
+    case "/default": {
+      if (parts.length < 2)
+        return "\u7528\u6CD5: /default /xxx";
+      const prefix = parts[1];
+      if (!rt2.routes[prefix])
+        return `\u8DEF\u7531\u4E0D\u5B58\u5728: ${prefix}\u3002\u5148\u7528 /addroute \u6DFB\u52A0\u3002`;
+      rt2.default = prefix;
+      saveRoutes(rt2);
+      return `\u2705 \u9ED8\u8BA4 Agent \u5DF2\u8BBE\u4E3A: ${prefix} \u2192 ${rt2.routes[prefix].name}`;
+    }
+    default:
+      return null;
+  }
+}
+function createMcpServer(client, getState) {
   const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)(?:\s+([a-km-z]{5}))?\s*$/i;
   let pendingPermissionRequestId;
-  const server = new Server({ name: "wechat", version: "0.1.0" }, {
+  const server = new Server({ name: "wechat", version: "0.2.0" }, {
     capabilities: {
-      experimental: {
-        "claude/channel": {},
-        "claude/channel/permission": {}
-      },
+      experimental: { "claude/channel": {}, "claude/channel/permission": {} },
       tools: {}
     },
-    instructions: '\u5FAE\u4FE1\u6D88\u606F\u4EE5 <channel source="wechat" chat_id="..." sender="..."> \u683C\u5F0F\u5230\u8FBE\u3002' + "\u6587\u672C\u5185\u5BB9\u5728\u6807\u7B7E\u4F53\u5185\u3002\u7528 reply \u5DE5\u5177\u56DE\u590D\uFF0C\u4F20\u5165 chat_id\u3002"
+    instructions: "\u5FAE\u4FE1\u6D88\u606F\u901A\u8FC7 OB L0 \u6295\u9012\u5230 Agent\u3002\u7528 reply \u5DE5\u5177\u56DE\u590D\u5FAE\u4FE1\u6D88\u606F\uFF0C\u4F20\u5165 chat_id\u3002"
   });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -46866,7 +46890,7 @@ async function main() {
         inputSchema: {
           type: "object",
           properties: {
-            chat_id: { type: "string", description: "\u76EE\u6807\u7528\u6237 ID\uFF08\u4ECE <channel> \u6807\u7B7E\u7684 chat_id \u5C5E\u6027\u83B7\u53D6\uFF09" },
+            chat_id: { type: "string", description: "\u76EE\u6807\u7528\u6237 ID\uFF08\u5FAE\u4FE1\u6D88\u606F meta \u4E2D\u7684 from_wx_user\uFF09" },
             text: { type: "string", description: "\u56DE\u590D\u6587\u672C\u5185\u5BB9" }
           },
           required: ["chat_id", "text"]
@@ -46874,30 +46898,18 @@ async function main() {
       },
       {
         name: "login",
-        description: "\u53D1\u8D77\u5FAE\u4FE1\u626B\u7801\u767B\u5F55\uFF0C\u8FD4\u56DE\u4E8C\u7EF4\u7801 URL",
+        description: "\u53D1\u8D77\u5FAE\u4FE1\u626B\u7801\u767B\u5F55\uFF08\u5982\u88AB\u6298\u53E0\u6309 ctrl+o \u5C55\u5F00\uFF09",
         inputSchema: { type: "object", properties: {} }
       },
       {
         name: "status",
-        description: "\u67E5\u8BE2\u5F53\u524D\u5FAE\u4FE1\u8FDE\u63A5\u72B6\u6001\u548C OB \u7ED1\u5B9A\u4FE1\u606F",
+        description: "\u67E5\u8BE2\u7F51\u5173\u72B6\u6001\uFF1A\u5FAE\u4FE1\u8FDE\u63A5 + \u8DEF\u7531\u8868 + OB \u8EAB\u4EFD",
         inputSchema: { type: "object", properties: {} }
       },
       {
         name: "logout",
-        description: "\u767B\u51FA\u5FAE\u4FE1\uFF0C\u6E05\u9664\u51ED\u8BC1\u5E76\u505C\u6B62\u6D88\u606F\u63A5\u6536",
+        description: "\u767B\u51FA\u5FAE\u4FE1\uFF0C\u6E05\u9664\u51ED\u8BC1",
         inputSchema: { type: "object", properties: {} }
-      },
-      {
-        name: "_simulate",
-        description: "[\u6D4B\u8BD5] \u6A21\u62DF\u6536\u5230\u5FAE\u4FE1\u6D88\u606F\uFF0C\u53D1\u9001\u4E00\u6761 MCP Channel notification",
-        inputSchema: {
-          type: "object",
-          properties: {
-            text: { type: "string", description: "\u6A21\u62DF\u6D88\u606F\u6587\u672C" },
-            chat_id: { type: "string", description: "\u6A21\u62DF\u53D1\u9001\u8005 ID" }
-          },
-          required: ["text"]
-        }
       }
     ]
   }));
@@ -46906,30 +46918,15 @@ async function main() {
     const args = req.params.arguments || {};
     switch (name) {
       case "reply": {
-        const chatId = args.chat_id;
-        const text = args.text;
-        if (!chatId || !text) {
+        if (!args.chat_id || !args.text) {
           return { content: [{ type: "text", text: "\u7F3A\u5C11 chat_id \u6216 text \u53C2\u6570" }] };
         }
-        client.stopTyping(chatId);
-        clearPendingPermissionRequestId();
+        client.stopTyping(args.chat_id);
         try {
-          await client.sendText(chatId, text);
-          if (botOpenId && ccOpenId) {
-            try {
-              const oceanbus = await Promise.resolve().then(() => __toESM(require_dist3(), 1));
-              const ob = await oceanbus.createOceanBus({
-                keyStore: { type: "memory" },
-                identity: { agent_id: ccCreds.agent_id, api_key: ccCreds.api_key, openid: ccOpenId }
-              });
-              await ob.send(botOpenId, `reply:${chatId}:${text}`);
-              await ob.destroy();
-            } catch (_2) {}
-          }
+          await client.sendText(args.chat_id, args.text);
           return { content: [{ type: "text", text: "\u5DF2\u53D1\u9001" }] };
-        } catch (err2) {
-          log(`reply failed: ${String(err2)}`);
-          return { content: [{ type: "text", text: `\u53D1\u9001\u5931\u8D25: ${String(err2)}` }] };
+        } catch (e) {
+          return { content: [{ type: "text", text: `\u53D1\u9001\u5931\u8D25: ${String(e)}` }] };
         }
       }
       case "login": {
@@ -46937,71 +46934,46 @@ async function main() {
         if (!result.qrcodeUrl) {
           return { content: [{ type: "text", text: `\u767B\u5F55\u5931\u8D25: ${result.message}` }] };
         }
-        const responseText = result.qrAscii ? `\u8BF7\u7528\u624B\u673A\u5FAE\u4FE1\u626B\u63CF\u4EE5\u4E0B\u4E8C\u7EF4\u7801\u767B\u5F55\uFF08\u5982\u88AB\u6298\u53E0\u8BF7\u6309 ctrl+o \u5C55\u5F00\uFF09:
+        const text = result.qrAscii ? `\u8BF7\u7528\u624B\u673A\u5FAE\u4FE1\u626B\u63CF\u4EE5\u4E0B\u4E8C\u7EF4\u7801\u767B\u5F55\uFF08\u5982\u88AB\u6298\u53E0\u8BF7\u6309 ctrl+o \u5C55\u5F00\uFF09:
 
 ${result.qrAscii}
 
-\u94FE\u63A5: ${result.qrcodeUrl}
-
-${result.message}` : `${result.message}
+\u94FE\u63A5: ${result.qrcodeUrl}` : `${result.message}
 
 \u94FE\u63A5: ${result.qrcodeUrl}`;
-        return { content: [{ type: "text", text: responseText }] };
+        return { content: [{ type: "text", text }] };
       }
       case "status": {
         const s2 = client.getStatus();
-        const pairing = loadPairing();
-        return {
-          content: [{
-            type: "text",
-            text: JSON.stringify({
-              wechat_connected: s2.connected,
-              wechat_user: s2.userId || "(\u672A\u767B\u5F55)",
-              cc_openid: ccOpenId ? ccOpenId.slice(0, 5) + "..." : "(\u672A\u6CE8\u518C)",
-              bot_openid: botOpenId ? botOpenId.slice(0, 5) + "..." : "(\u672A\u6CE8\u518C)",
-              paired: !!pairing.ilinkUserId,
-              paired_user: pairing.ilinkUserId || "",
-              session_paused: s2.sessionPaused
-            })
-          }]
-        };
+        const st2 = getState();
+        return { content: [{
+          type: "text",
+          text: JSON.stringify({
+            wechat_connected: s2.connected,
+            wechat_user: s2.userId || "(\u672A\u767B\u5F55)",
+            gateway_ob: st2.botOpenId ? st2.botOpenId.slice(0, 5) + "..." : "(\u672A\u6CE8\u518C)",
+            cc_ob: st2.ccOpenId ? st2.ccOpenId.slice(0, 5) + "..." : "(\u672A\u6CE8\u518C)",
+            bound: !!st2.binding,
+            default_route: st2.rt.default,
+            routes: Object.keys(st2.rt.routes).length
+          })
+        }] };
       }
       case "logout": {
         const s2 = client.getStatus();
-        if (!s2.accountId) {
+        if (!s2.accountId)
           return { content: [{ type: "text", text: "\u5F53\u524D\u6CA1\u6709\u5DF2\u767B\u5F55\u7684\u5FAE\u4FE1\u8D26\u53F7" }] };
-        }
         await client.logout();
         try {
-          fs.unlinkSync(PAIRING_FILE);
+          fs.unlinkSync(BINDING_FILE);
         } catch (_2) {}
-        log(`logout: ${s2.accountId}`);
-        return { content: [{ type: "text", text: `\u5DF2\u767B\u51FA\u5FAE\u4FE1\u8D26\u53F7 ${s2.accountId}\uFF0C\u51ED\u8BC1\u548C\u914D\u5BF9\u5DF2\u6E05\u9664\u3002` }] };
-      }
-      case "_simulate": {
-        const text = args.text || "\u6A21\u62DF\u6D88\u606F";
-        const chatId = args.chat_id || "test_user_123";
-        log(`_simulate: sending MCP notification for "${text}" from ${chatId}`);
-        try {
-          await server.notification({
-            method: "notifications/claude/channel",
-            params: {
-              content: text,
-              meta: { type: "message", chat_id: chatId, sender: chatId }
-            }
-          });
-          log(`_simulate: notification sent successfully`);
-          return { content: [{ type: "text", text: `\u2705 \u6A21\u62DF\u6D88\u606F\u5DF2\u53D1\u9001: "${text}" (from: ${chatId})\u3002\u68C0\u67E5 CC \u4F1A\u8BDD\u4E2D\u662F\u5426\u51FA\u73B0\u8FD9\u6761\u6D88\u606F\u3002` }] };
-        } catch (e) {
-          log(`_simulate: notification failed: ${e.message}`);
-          return { content: [{ type: "text", text: `\u274C \u53D1\u9001\u5931\u8D25: ${e.message}` }] };
-        }
+        return { content: [{ type: "text", text: `\u5DF2\u767B\u51FA ${s2.accountId}` }] };
       }
       default:
         throw new Error(`unknown tool: ${name}`);
     }
   });
-  const PermissionRequestSchema = exports_external.object({
+  server.setNotificationHandler(exports_external.object({
     method: exports_external.literal("notifications/claude/channel/permission_request"),
     params: exports_external.object({
       request_id: exports_external.string(),
@@ -47009,117 +46981,73 @@ ${result.message}` : `${result.message}
       description: exports_external.string(),
       input_preview: exports_external.string()
     })
-  });
-  server.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
-    const status = client.getStatus();
-    if (!status.userId)
+  }), async ({ params }) => {
+    const s2 = client.getStatus();
+    if (!s2.userId)
       return;
-    const text = `Claude \u8BF7\u6C42\u6267\u884C ${params.tool_name}:
+    try {
+      await client.sendText(s2.userId, `Claude \u8BF7\u6C42\u6267\u884C ${params.tool_name}:
 ${params.description}
 ` + (params.input_preview ? `\u8F93\u5165: ${params.input_preview}
 ` : "") + `
-\u56DE\u590D yes / no`;
-    try {
-      await client.sendText(status.userId, text, { raw: true });
+\u56DE\u590D yes / no`, { raw: true });
       pendingPermissionRequestId = params.request_id;
-    } catch (err2) {
-      log(`permission_request forward failed: ${String(err2)}`);
-    }
-  });
-  function clearPendingPermissionRequestId() {
-    pendingPermissionRequestId = undefined;
-  }
-  client.on("loginSuccess", (accountId) => {
-    log(`login success: ${accountId}`);
-    const status = client.getStatus();
-    if (status.userId && ccOpenId) {
-      const pairing = loadPairing();
-      pairing.ilinkUserId = status.userId;
-      pairing.ccOpenId = ccOpenId;
-      if (ccCreds)
-        pairing.ccAgentId = ccCreds.agent_id;
-      savePairing(pairing);
-      pairings[status.userId] = { ccOpenId, ccName: "CC" };
-      log(`auto-paired: ${status.userId.slice(0, 12)}... \u2194 ${ccOpenId.slice(0, 5)}...`);
-      client.sendText(status.userId, `\u2705 \u5DF2\u8FDE\u63A5 CC (OpenID: ${ccOpenId.slice(0, 5)}...)
-
-\u73B0\u5728\u53EF\u4EE5\u76F4\u63A5\u7ED9\u6211\u53D1\u6307\u4EE4\u4E86\u3002`).catch(() => {});
-    }
-  });
-  client.on("message", async (msg) => {
-    const permMatch = PERMISSION_REPLY_RE.exec(msg.text);
-    if (permMatch) {
-      const requestId = permMatch[2]?.toLowerCase() ?? pendingPermissionRequestId;
-      if (requestId) {
-        await server.notification({
-          method: "notifications/claude/channel/permission",
-          params: {
-            request_id: requestId,
-            behavior: permMatch[1].toLowerCase().startsWith("y") ? "allow" : "deny"
-          }
-        });
-        clearPendingPermissionRequestId();
-        return;
-      }
-    }
-    client.startTyping(msg.chatId);
-    const meta3 = {
-      type: "message",
-      chat_id: msg.chatId,
-      sender: msg.chatId
-    };
-    if (msg.mediaPath) {
-      meta3.media_path = msg.mediaPath;
-      meta3.media_type = msg.mediaType || "";
-    }
-    let content = msg.text;
-    if (msg.mediaPath) {
-      const mt2 = msg.mediaType ?? "";
-      const label = mt2.startsWith("image") ? "\u56FE\u7247" : mt2.startsWith("video") ? "\u89C6\u9891" : mt2.startsWith("audio") ? "\u8BED\u97F3" : "\u5A92\u4F53\u6D88\u606F";
-      content = `[${label}: ${path.basename(msg.mediaPath)}]`;
-    }
-    try {
-      await server.notification({
-        method: "notifications/claude/channel",
-        params: { content, meta: meta3 }
-      });
-      log(`[MCP] notification sent for ${msg.chatId.slice(0, 12)}...: ${content.slice(0, 50)}`);
     } catch (e) {
-      log(`[MCP] notification failed: ${e.message}`);
+      log(`perm forward failed: ${String(e)}`);
     }
   });
-  client.on("sessionExpired", async (accountId) => {
-    log(`session expired: ${accountId}`);
-    await server.notification({
-      method: "notifications/claude/channel",
-      params: {
-        content: "\u5FAE\u4FE1\u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF08session \u8FC7\u671F\uFF09\uFF0C\u8BF7\u8C03\u7528 login \u5DE5\u5177\u91CD\u65B0\u626B\u7801\u8FDE\u63A5\u3002",
-        meta: { type: "session_expired" }
-      }
-    });
-  });
-  client.on("qrRefresh", async ({ qrcodeUrl, qrAscii }) => {
-    log(`QR refreshed: ${qrcodeUrl}`);
-    const text = qrAscii ? `\u4E8C\u7EF4\u7801\u5DF2\u8FC7\u671F\uFF0C\u65B0\u4E8C\u7EF4\u7801\uFF08\u5982\u88AB\u6298\u53E0\u8BF7\u6309 ctrl+o \u5C55\u5F00\uFF09:
-
-${qrAscii}
-\u94FE\u63A5: ${qrcodeUrl}` : `\u4E8C\u7EF4\u7801\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u4F7F\u7528\u65B0\u94FE\u63A5\u626B\u7801: ${qrcodeUrl}`;
+  return server;
+}
+async function main() {
+  log("wechat-cc v0.2.0 gateway starting...");
+  let rt2 = loadRoutes();
+  const binding = loadBinding();
+  let ccCreds = loadCcObCreds();
+  let ccOpenId = ccCreds?.openid || "";
+  if (ccOpenId)
+    log(`CC OB: ${ccOpenId.slice(0, 5)}...`);
+  else
+    log("CC OB not registered yet");
+  let botObCreds = loadBotObCreds();
+  if (!botObCreds?.openid) {
+    log("Registering Bot OB identity...");
+    const oceanbus = await Promise.resolve().then(() => __toESM(require_dist3(), 1));
+    const ob = await oceanbus.createOceanBus({ keyStore: { type: "memory" } });
     try {
-      await server.notification({
-        method: "notifications/claude/channel",
-        params: { content: text, meta: { type: "qr_refresh" } }
-      });
-    } catch (err2) {
-      log(`failed to send QR refresh: ${String(err2)}`);
+      const reg = await ob.createIdentity();
+      const openid = await ob.getAddress();
+      botObCreds = { agent_id: reg.agent_id, api_key: reg.api_key, openid, created_at: new Date().toISOString() };
+      saveBotObCreds(botObCreds);
+      log(`Bot OB created: ${openid.slice(0, 5)}...`);
+    } catch (e) {
+      log(`Bot OB failed: ${e.message}`);
     }
+    await ob.destroy();
+  }
+  const botOpenId = botObCreds?.openid || "";
+  if (ccOpenId && !rt2.routes["/cc"]) {
+    rt2.routes["/cc"] = {
+      openId: ccOpenId,
+      name: "CC-" + (ccCreds?.agent_id || "local").slice(0, 8),
+      type: "claude-code",
+      addedAt: new Date().toISOString()
+    };
+    if (!rt2.default)
+      rt2.default = "/cc";
+    saveRoutes(rt2);
+    log(`auto-added /cc route \u2192 ${ccOpenId.slice(0, 5)}...`);
+  }
+  const client = new xe({
+    stateDir: path.join(STATE_DIR, "wechat"),
+    tempDir: path.join(os.tmpdir(), "wechat-cc"),
+    clientIdPrefix: "wechat-cc"
   });
-  client.on("error", (err2) => {
-    log(`client error: ${String(err2)}`);
-  });
+  await client.cleanupTempMedia().catch(() => {});
+  let obListener = null;
   if (botOpenId && botObCreds) {
     try {
       const oceanbus = await Promise.resolve().then(() => __toESM(require_dist3(), 1));
-      const obListener = await oceanbus.createOceanBus({
+      obListener = await oceanbus.createOceanBus({
         keyStore: { type: "memory" },
         identity: { agent_id: botObCreds.agent_id, api_key: botObCreds.api_key, openid: botOpenId }
       });
@@ -47127,47 +47055,125 @@ ${qrAscii}
         if (msg.from_openid === botOpenId)
           return;
         const content = msg.content || "";
-        const wxUid = Object.keys(pairings).find((uid) => pairings[uid].ccOpenId === msg.from_openid);
-        if (wxUid) {
-          log(`[\u2190OB] ${msg.from_openid.slice(0, 5)}... \u2192 WeChat ${wxUid.slice(0, 12)}...`);
+        let parsed;
+        try {
+          parsed = JSON.parse(content);
+        } catch (_2) {
+          parsed = { text: content };
+        }
+        const toWxUser = parsed.meta?.to_wx_user || "";
+        const replyText = parsed.text || content;
+        const agentName = parsed.meta?.agent_name || "Agent";
+        if (toWxUser) {
+          log(`[\u2190OB] Agent \u2192 WeChat ${toWxUser.slice(0, 12)}...`);
           try {
-            const body = content.replace(/^from .+\nto .+\n/m, "").trim();
-            await client.sendText(wxUid, `\uD83D\uDD14 CC \u56DE\u590D\uFF1A
+            await client.sendText(toWxUser, `\uD83D\uDD14 ${agentName} \u56DE\u590D\uFF1A
 
-${body}`);
+${replyText}`);
           } catch (e) {
-            log(`OB\u2192WeChat forward failed: ${e.message}`);
+            log(`OB\u2192WeChat failed: ${e.message}`);
           }
         }
       });
       log("OB reply listener started");
     } catch (e) {
-      log(`OB listener start failed: ${e.message}`);
+      log(`OB listener failed: ${e.message}`);
     }
   }
-  const transport = new StdioServerTransport;
-  await server.connect(transport);
-  log("MCP server connected via stdio");
-  setTimeout(async () => {
+  client.on("loginSuccess", (accountId) => {
+    log(`login success: ${accountId}`);
+    const s2 = client.getStatus();
+    if (s2.userId) {
+      saveBinding({ ilinkUserId: s2.userId, defaultRoute: rt2.default, boundAt: new Date().toISOString() });
+      log(`bound: ${s2.userId.slice(0, 12)}... \u2192 default ${rt2.default}`);
+      client.sendText(s2.userId, `\u2705 \u5DF2\u7ED1\u5B9A\uFF01\u9ED8\u8BA4 Agent: ${rt2.default}
+` + `\u53D1\u9001 /help \u67E5\u770B\u53EF\u7528\u547D\u4EE4\u548C Agent \u5217\u8868\u3002`).catch(() => {});
+    }
+  });
+  client.on("message", async (msg) => {
+    const text = (msg.text || "").trim();
+    if (!text)
+      return;
+    log(`[\u5FAE\u4FE1] ${msg.chatId.slice(0, 12)}...: ${text.slice(0, 80)}`);
+    rt2 = loadRoutes();
+    const sysReply = handleSystemCommand(text, msg.chatId, rt2);
+    if (sysReply !== null) {
+      await client.sendText(msg.chatId, sysReply).catch(() => {});
+      return;
+    }
+    const binding2 = loadBinding();
+    if (!binding2) {
+      await client.sendText(msg.chatId, "\u8BF7\u5148\u626B\u7801\u7ED1\u5B9A\u3002\u53D1\u9001 /help \u67E5\u770B\u8BF4\u660E\u3002").catch(() => {});
+      return;
+    }
+    let prefix = "";
+    let body = text;
+    const m2 = text.match(/^(\/\S+)\s+(.*)/);
+    if (m2) {
+      prefix = m2[1];
+      body = m2[2];
+    }
+    let route = null;
+    if (prefix) {
+      route = lookupRoute(prefix, rt2);
+      if (!route) {
+        await client.sendText(msg.chatId, `\u672A\u77E5\u524D\u7F00: ${prefix}
+\u53EF\u7528: ${Object.keys(rt2.routes).join(", ") || "(\u65E0)"}
+\u9ED8\u8BA4: ${rt2.default}`).catch(() => {});
+        return;
+      }
+    } else {
+      route = lookupRoute(rt2.default, rt2);
+      if (!route) {
+        await client.sendText(msg.chatId, "\u6CA1\u6709\u53EF\u7528 Agent\u3002\u5148\u7528 /addroute \u6DFB\u52A0\u8DEF\u7531\u3002").catch(() => {});
+        return;
+      }
+    }
+    if (!botOpenId || !botObCreds) {
+      await client.sendText(msg.chatId, "\u7F51\u5173 OB \u672A\u5C31\u7EEA\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002").catch(() => {});
+      return;
+    }
     try {
-      await server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: "\uD83E\uDDEA \u6D4B\u8BD5\u6D88\u606F \u2014 \u5982\u679C\u4F60\u770B\u5230\u8FD9\u6761\u6D88\u606F\uFF0C\u8BF4\u660E MCP Channel notification \u5DF2\u901A\u3002",
-          meta: { chat_id: "test_user", sender: "test_user" }
+      const oceanbus = await Promise.resolve().then(() => __toESM(require_dist3(), 1));
+      const ob = await oceanbus.createOceanBus({
+        keyStore: { type: "memory" },
+        identity: { agent_id: botObCreds.agent_id, api_key: botObCreds.api_key, openid: botOpenId }
+      });
+      const obMsg = JSON.stringify({
+        action: "command",
+        text: body,
+        meta: {
+          from_wx_user: msg.chatId,
+          route_prefix: prefix || rt2.default,
+          agent_name: route.name,
+          message_id: `wx_${Date.now()}`
         }
       });
-      log("test notification sent");
+      await ob.send(route.openId, obMsg);
+      await ob.destroy();
+      log(`[\u2192OB] \u2192 ${route.name} (${route.openId.slice(0, 5)}...)`);
+      await client.sendText(msg.chatId, `\u5DF2\u8F6C\u53D1\u7ED9 ${route.name}\uFF0C\u7B49\u5F85\u56DE\u590D...`).catch(() => {});
     } catch (e) {
-      log(`test notification failed: ${e.message}`);
+      log(`OB send failed: ${e.message}`);
+      await client.sendText(msg.chatId, `\u8F6C\u53D1\u5931\u8D25: ${e.message}`).catch(() => {});
     }
-  }, 500);
+  });
+  client.on("sessionExpired", async () => {
+    log("session expired");
+  });
+  client.on("qrRefresh", async ({ qrcodeUrl, qrAscii }) => {
+    log(`QR refreshed: ${qrcodeUrl}`);
+  });
+  client.on("error", (err2) => log(`client error: ${String(err2)}`));
+  const server = createMcpServer(client, () => ({ rt: rt2, binding: loadBinding(), ccOpenId, botOpenId }));
+  const transport = new StdioServerTransport;
+  await server.connect(transport);
+  log("MCP connected (login/status/logout tools only)");
   let shuttingDown = false;
   function shutdown() {
     if (shuttingDown)
       return;
     shuttingDown = true;
-    log("shutting down...");
     client.stop();
     process.exit(0);
   }
@@ -47178,23 +47184,11 @@ ${body}`);
   const accounts = client.listAccounts();
   const launched = accounts.length > 0 && await client.start(accounts[0]);
   if (!launched) {
-    log("no accounts, sending login prompt");
-    setTimeout(async () => {
-      try {
-        await server.notification({
-          method: "notifications/claude/channel",
-          params: {
-            content: `\u5FAE\u4FE1 Channel \u5DF2\u542F\u52A8\uFF0C\u4F46\u5C1A\u672A\u767B\u5F55\u3002
-` + `\u8BF7\u8C03\u7528 login \u5DE5\u5177\u626B\u7801\u8FDE\u63A5\u5FAE\u4FE1\u3002
-` + "\u626B\u7801\u6210\u529F\u540E\u81EA\u52A8\u7ED1\u5B9A CC OpenID\uFF0C\u65E0\u9700\u624B\u52A8\u8F93\u5165 pair \u547D\u4EE4\u3002",
-            meta: { type: "login_required" }
-          }
-        });
-      } catch (err2) {
-        log(`failed to send login prompt: ${String(err2)}`);
-      }
-    }, 1000);
+    log("no accounts, will prompt login via MCP status");
+  } else {
+    log(`gateway ready \u2014 ${Object.keys(rt2.routes).length} routes, default: ${rt2.default || "(none)"}`);
   }
+  await new Promise(() => {});
 }
 main().catch((err2) => {
   log(`fatal: ${String(err2)}`);

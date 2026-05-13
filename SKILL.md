@@ -1,7 +1,7 @@
 ---
 name: wechat-cc
-version: 0.1.0
-description: WeChat Channel for Claude Code — 微信扫码操控 CC，基于 OceanBus L0 P2P
+version: 0.2.0
+description: OB Gateway — WeChat ⇄ OB L0 ⇄ Agents。路由前缀分发，多 Agent 支持
 ---
 
 # wechat-cc

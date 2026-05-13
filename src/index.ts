@@ -1,3 +1,13 @@
+/**
+ * wechat-cc v0.2.0 — OB Gateway
+ *
+ * WeChat ⇄ iLink ⇄ Gateway ⇄ OB L0 ⇄ Agents
+ *
+ * Gateway does NOT process commands. It only routes messages:
+ *   Inbound:  parse prefix → lookup route → ob.send(Agent)
+ *   Outbound: ob listener receives Agent reply → WeChat sendText
+ */
+
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -19,142 +29,146 @@ function log(msg: string): void {
 
 // ── State ─────────────────────────────────────────────────────
 const STATE_DIR = path.join(os.homedir(), ".claude", "channels", "wechat-cc");
-const PAIRING_FILE = path.join(STATE_DIR, "pairing.json");
-
-function ensureStateDir() {
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-}
-
-function loadPairing(): { ilinkUserId?: string; ccOpenId?: string; ccAgentId?: string } {
-  try {
-    if (fs.existsSync(PAIRING_FILE)) return JSON.parse(fs.readFileSync(PAIRING_FILE, "utf-8"));
-  } catch (_) {}
-  return {};
-}
-
-function savePairing(data: Record<string, string>) {
-  ensureStateDir();
-  fs.writeFileSync(PAIRING_FILE, JSON.stringify(data, null, 2), "utf-8");
-}
-
-// ── OB L0 helpers ─────────────────────────────────────────────
-const CC_CRED_FILE = path.join(os.homedir(), ".oceanbus-chat", "credentials.json");
+const ROUTES_FILE = path.join(STATE_DIR, "routes.json");
+const BINDING_FILE = path.join(STATE_DIR, "binding.json");
 const BOT_OB_FILE = path.join(STATE_DIR, "bot-ob.json");
+const CC_CRED_FILE = path.join(os.homedir(), ".oceanbus-chat", "credentials.json");
 
+function ensureDir() { fs.mkdirSync(STATE_DIR, { recursive: true }); }
+
+// ── Route Table ────────────────────────────────────────────────
+interface RouteEntry {
+  openId: string;
+  name: string;
+  type?: string;
+  addedAt: string;
+}
+interface RouteTable {
+  routes: Record<string, RouteEntry>;
+  default: string;
+}
+
+function loadRoutes(): RouteTable {
+  try {
+    if (fs.existsSync(ROUTES_FILE)) return JSON.parse(fs.readFileSync(ROUTES_FILE, "utf-8"));
+  } catch (_) {}
+  return { routes: {}, default: "" };
+}
+
+function saveRoutes(rt: RouteTable) {
+  ensureDir();
+  fs.writeFileSync(ROUTES_FILE, JSON.stringify(rt, null, 2), "utf-8");
+}
+
+function lookupRoute(prefix: string, rt: RouteTable): RouteEntry | null {
+  return rt.routes[prefix] || null;
+}
+
+// ── Binding ────────────────────────────────────────────────────
+interface Binding {
+  ilinkUserId: string;
+  defaultRoute: string;
+  boundAt: string;
+}
+
+function loadBinding(): Binding | null {
+  try {
+    if (fs.existsSync(BINDING_FILE)) return JSON.parse(fs.readFileSync(BINDING_FILE, "utf-8"));
+  } catch (_) {}
+  return null;
+}
+
+function saveBinding(b: Binding) {
+  ensureDir();
+  fs.writeFileSync(BINDING_FILE, JSON.stringify(b, null, 2), "utf-8");
+}
+
+// ── OB Credentials ─────────────────────────────────────────────
 function loadCcObCreds() {
-  try {
-    if (fs.existsSync(CC_CRED_FILE)) return JSON.parse(fs.readFileSync(CC_CRED_FILE, "utf-8"));
-  } catch (_) {}
+  try { if (fs.existsSync(CC_CRED_FILE)) return JSON.parse(fs.readFileSync(CC_CRED_FILE, "utf-8")); } catch (_) {}
   return null;
 }
-
 function loadBotObCreds() {
-  try {
-    if (fs.existsSync(BOT_OB_FILE)) return JSON.parse(fs.readFileSync(BOT_OB_FILE, "utf-8"));
-  } catch (_) {}
+  try { if (fs.existsSync(BOT_OB_FILE)) return JSON.parse(fs.readFileSync(BOT_OB_FILE, "utf-8")); } catch (_) {}
   return null;
 }
+function saveBotObCreds(data: unknown) { ensureDir(); fs.writeFileSync(BOT_OB_FILE, JSON.stringify(data, null, 2), "utf-8"); }
 
-function saveBotObCreds(data: unknown) {
-  ensureStateDir();
-  fs.writeFileSync(BOT_OB_FILE, JSON.stringify(data, null, 2), "utf-8");
+// ── System Commands ────────────────────────────────────────────
+function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): string | null {
+  const parts = text.trim().split(/\s+/);
+
+  switch (parts[0]) {
+    case "/help": {
+      const prefixes = Object.keys(rt.routes);
+      const list = prefixes.length > 0
+        ? prefixes.map(p => `  ${p} → ${rt.routes[p].name} (${rt.routes[p].openId.slice(0, 5)}...)`).join("\n")
+        : "  (无)";
+      const def = rt.default || "(未设置)";
+      return `可用 Agent:\n${list}\n\n默认: ${def}\n\n系统命令: /help /routes /addroute /removeroute /default /status`;
+    }
+    case "/routes": {
+      const entries = Object.entries(rt.routes);
+      if (entries.length === 0) return "路由表为空。使用 /addroute /xxx OpenID 名称 添加。";
+      return entries.map(([k, v]) => `${k} → ${v.name} (${v.openId.slice(0, 5)}...)`).join("\n")
+        + `\n\n默认: ${rt.default || "(未设置)"}`;
+    }
+    case "/addroute": {
+      if (parts.length < 4) return "用法: /addroute /xxx OpenID 名称\n例如: /addroute /trae trae_openid_xxx Trae";
+      const prefix = parts[1];
+      if (!prefix.startsWith("/")) return "前缀必须以 / 开头，例如 /trae";
+      const openId = parts[2];
+      const name = parts.slice(3).join(" ");
+      rt.routes[prefix] = { openId, name, addedAt: new Date().toISOString() };
+      if (!rt.default) rt.default = prefix;
+      saveRoutes(rt);
+      return `✅ 已添加路由: ${prefix} → ${name} (${openId.slice(0, 5)}...)`;
+    }
+    case "/removeroute": {
+      if (parts.length < 2) return "用法: /removeroute /xxx";
+      const prefix = parts[1];
+      if (!rt.routes[prefix]) return `路由不存在: ${prefix}`;
+      const removed = rt.routes[prefix];
+      delete rt.routes[prefix];
+      if (rt.default === prefix) {
+        const remaining = Object.keys(rt.routes);
+        rt.default = remaining.length > 0 ? remaining[0] : "";
+      }
+      saveRoutes(rt);
+      return `✅ 已移除: ${prefix} → ${removed.name}`;
+    }
+    case "/default": {
+      if (parts.length < 2) return "用法: /default /xxx";
+      const prefix = parts[1];
+      if (!rt.routes[prefix]) return `路由不存在: ${prefix}。先用 /addroute 添加。`;
+      rt.default = prefix;
+      saveRoutes(rt);
+      return `✅ 默认 Agent 已设为: ${prefix} → ${rt.routes[prefix].name}`;
+    }
+    default:
+      return null; // not a system command
+  }
 }
 
-// ── Main ──────────────────────────────────────────────────────
-async function main() {
-  log("wechat-cc channel starting...");
-
-  // 0. Detect conflict with weixin-claude-code
-  const CONFLICT_STATE_DIR = path.join(os.homedir(), ".claude", "channels", "wechat");
-  if (fs.existsSync(CONFLICT_STATE_DIR)) {
-    const conflictAccounts = path.join(CONFLICT_STATE_DIR, "accounts");
-    if (fs.existsSync(conflictAccounts) && fs.readdirSync(conflictAccounts).length > 0) {
-      log("WARNING: weixin-claude-code accounts detected. Both plugins will compete for WeChat messages.");
-      log("  To avoid conflicts, disable one plugin: /plugin disable weixin-claude-code@dcatfly-plugins");
-      log("  Or: /plugin disable wechat-cc@oceanbus-plugins");
-    }
-  }
-
-  // 1. CC OB identity (load existing or create)
-  let ccCreds = loadCcObCreds();
-  let ccOpenId: string;
-  if (ccCreds?.openid) {
-    ccOpenId = ccCreds.openid;
-    log(`CC OB identity: ${ccOpenId.slice(0, 5)}...`);
-  } else {
-    log("CC OB identity not found — will be created on first OB use");
-    ccOpenId = "";
-  }
-
-  // 2. Bot OB identity (load or create)
-  let botObCreds = loadBotObCreds();
-  if (!botObCreds?.openid) {
-    log("Registering Bot OB identity...");
-    const oceanbus = await import("oceanbus");
-    const ob = await oceanbus.createOceanBus({ keyStore: { type: "memory" } });
-    try {
-      const reg = await ob.createIdentity();
-      const openid = await ob.getAddress();
-      botObCreds = {
-        agent_id: reg.agent_id,
-        api_key: reg.api_key,
-        openid,
-        created_at: new Date().toISOString(),
-      };
-      saveBotObCreds(botObCreds);
-      log(`Bot OB identity created: ${openid.slice(0, 5)}...`);
-    } catch (e: any) {
-      log(`Bot OB registration failed: ${e.message}`);
-      await ob.destroy();
-      // Continue without OB — direct iLink ↔ MCP mode
-    }
-    await ob.destroy();
-  }
-  const botOpenId: string = botObCreds?.openid || "";
-
-  // In-memory pairings (synced with disk), for OB reply routing
-  const pairings: Record<string, { ccOpenId: string; ccName: string }> = {};
-  (function loadPairingsIntoMemory() {
-    const p = loadPairing();
-    if (p.ilinkUserId && p.ccOpenId) {
-      pairings[p.ilinkUserId] = { ccOpenId: p.ccOpenId, ccName: "CC" };
-      log(`loaded pairing: ${p.ilinkUserId.slice(0, 12)}... ↔ ${p.ccOpenId.slice(0, 5)}...`);
-    }
-  })();
-
-  // 3. WeixinBotClient
-  const client = new WeixinBotClient({
-    stateDir: path.join(STATE_DIR, "wechat"),
-    tempDir: path.join(os.tmpdir(), "wechat-cc"),
-    clientIdPrefix: "wechat-cc",
-  });
-
-  await client.cleanupTempMedia().catch((err: unknown) =>
-    log(`temp cleanup failed: ${String(err)}`)
-  );
-
-  // 4. MCP Server
-  // Permission reply regex
+// ── MCP Server ─────────────────────────────────────────────────
+function createMcpServer(client: WeixinBotClient, getState: () => {
+  rt: RouteTable; binding: Binding | null; ccOpenId: string; botOpenId: string;
+}) {
   const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)(?:\s+([a-km-z]{5}))?\s*$/i;
   let pendingPermissionRequestId: string | undefined;
 
   const server = new Server(
-    { name: "wechat", version: "0.1.0" },
+    { name: "wechat", version: "0.2.0" },
     {
       capabilities: {
-        experimental: {
-          "claude/channel": {},
-          "claude/channel/permission": {},
-        },
+        experimental: { "claude/channel": {}, "claude/channel/permission": {} },
         tools: {},
       },
       instructions:
-        '微信消息以 <channel source="wechat" chat_id="..." sender="..."> 格式到达。' +
-        '文本内容在标签体内。用 reply 工具回复，传入 chat_id。',
-    }
+        '微信消息通过 OB L0 投递到 Agent。用 reply 工具回复微信消息，传入 chat_id。',
+    },
   );
 
-  // Tools
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
@@ -163,7 +177,7 @@ async function main() {
         inputSchema: {
           type: "object" as const,
           properties: {
-            chat_id: { type: "string", description: "目标用户 ID（从 <channel> 标签的 chat_id 属性获取）" },
+            chat_id: { type: "string", description: "目标用户 ID（微信消息 meta 中的 from_wx_user）" },
             text: { type: "string", description: "回复文本内容" },
           },
           required: ["chat_id", "text"],
@@ -171,30 +185,18 @@ async function main() {
       },
       {
         name: "login",
-        description: "发起微信扫码登录，返回二维码 URL",
+        description: "发起微信扫码登录（如被折叠按 ctrl+o 展开）",
         inputSchema: { type: "object" as const, properties: {} },
       },
       {
         name: "status",
-        description: "查询当前微信连接状态和 OB 绑定信息",
+        description: "查询网关状态：微信连接 + 路由表 + OB 身份",
         inputSchema: { type: "object" as const, properties: {} },
       },
       {
         name: "logout",
-        description: "登出微信，清除凭证并停止消息接收",
+        description: "登出微信，清除凭证",
         inputSchema: { type: "object" as const, properties: {} },
-      },
-      {
-        name: "_simulate",
-        description: "[测试] 模拟收到微信消息，发送一条 MCP Channel notification",
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            text: { type: "string", description: "模拟消息文本" },
-            chat_id: { type: "string", description: "模拟发送者 ID" },
-          },
-          required: ["text"],
-        },
       },
     ],
   }));
@@ -205,31 +207,15 @@ async function main() {
 
     switch (name) {
       case "reply": {
-        const chatId = args.chat_id;
-        const text = args.text;
-        if (!chatId || !text) {
+        if (!args.chat_id || !args.text) {
           return { content: [{ type: "text" as const, text: "缺少 chat_id 或 text 参数" }] };
         }
-        client.stopTyping(chatId);
-        clearPendingPermissionRequestId();
+        client.stopTyping(args.chat_id);
         try {
-          await client.sendText(chatId, text);
-          // Also send via OB L0 if Bot identity exists
-          if (botOpenId && ccOpenId) {
-            try {
-              const oceanbus = await import("oceanbus");
-              const ob = await oceanbus.createOceanBus({
-                keyStore: { type: "memory" },
-                identity: { agent_id: ccCreds.agent_id, api_key: ccCreds.api_key, openid: ccOpenId },
-              });
-              await ob.send(botOpenId, `reply:${chatId}:${text}`);
-              await ob.destroy();
-            } catch (_) {}
-          }
+          await client.sendText(args.chat_id, args.text);
           return { content: [{ type: "text" as const, text: "已发送" }] };
-        } catch (err: any) {
-          log(`reply failed: ${String(err)}`);
-          return { content: [{ type: "text" as const, text: `发送失败: ${String(err)}` }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: `发送失败: ${String(e)}` }] };
         }
       }
       case "login": {
@@ -237,58 +223,33 @@ async function main() {
         if (!result.qrcodeUrl) {
           return { content: [{ type: "text" as const, text: `登录失败: ${result.message}` }] };
         }
-        const responseText = result.qrAscii
-          ? `请用手机微信扫描以下二维码登录（如被折叠请按 ctrl+o 展开）:\n\n${result.qrAscii}\n\n链接: ${result.qrcodeUrl}\n\n${result.message}`
+        const text = result.qrAscii
+          ? `请用手机微信扫描以下二维码登录（如被折叠请按 ctrl+o 展开）:\n\n${result.qrAscii}\n\n链接: ${result.qrcodeUrl}`
           : `${result.message}\n\n链接: ${result.qrcodeUrl}`;
-        return { content: [{ type: "text" as const, text: responseText }] };
+        return { content: [{ type: "text" as const, text }] };
       }
       case "status": {
         const s = client.getStatus();
-        const pairing = loadPairing();
-        return {
-          content: [{
-            type: "text" as const,
-            text: JSON.stringify({
-              wechat_connected: s.connected,
-              wechat_user: s.userId || "(未登录)",
-              cc_openid: ccOpenId ? ccOpenId.slice(0, 5) + "..." : "(未注册)",
-              bot_openid: botOpenId ? botOpenId.slice(0, 5) + "..." : "(未注册)",
-              paired: !!pairing.ilinkUserId,
-              paired_user: pairing.ilinkUserId || "",
-              session_paused: s.sessionPaused,
-            }),
-          }],
-        };
+        const st = getState();
+        return { content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            wechat_connected: s.connected,
+            wechat_user: s.userId || "(未登录)",
+            gateway_ob: st.botOpenId ? st.botOpenId.slice(0, 5) + "..." : "(未注册)",
+            cc_ob: st.ccOpenId ? st.ccOpenId.slice(0, 5) + "..." : "(未注册)",
+            bound: !!st.binding,
+            default_route: st.rt.default,
+            routes: Object.keys(st.rt.routes).length,
+          }),
+        }] };
       }
       case "logout": {
         const s = client.getStatus();
-        if (!s.accountId) {
-          return { content: [{ type: "text" as const, text: "当前没有已登录的微信账号" }] };
-        }
+        if (!s.accountId) return { content: [{ type: "text" as const, text: "当前没有已登录的微信账号" }] };
         await client.logout();
-        // Clear pairing
-        try { fs.unlinkSync(PAIRING_FILE); } catch (_) {}
-        log(`logout: ${s.accountId}`);
-        return { content: [{ type: "text" as const, text: `已登出微信账号 ${s.accountId}，凭证和配对已清除。` }] };
-      }
-      case "_simulate": {
-        const text = args.text || "模拟消息";
-        const chatId = args.chat_id || "test_user_123";
-        log(`_simulate: sending MCP notification for "${text}" from ${chatId}`);
-        try {
-          await server.notification({
-            method: "notifications/claude/channel",
-            params: {
-              content: text,
-              meta: { type: "message", chat_id: chatId, sender: chatId },
-            },
-          });
-          log(`_simulate: notification sent successfully`);
-          return { content: [{ type: "text" as const, text: `✅ 模拟消息已发送: "${text}" (from: ${chatId})。检查 CC 会话中是否出现这条消息。` }] };
-        } catch (e: any) {
-          log(`_simulate: notification failed: ${e.message}`);
-          return { content: [{ type: "text" as const, text: `❌ 发送失败: ${e.message}` }] };
-        }
+        try { fs.unlinkSync(BINDING_FILE); } catch (_) {}
+        return { content: [{ type: "text" as const, text: `已登出 ${s.accountId}` }] };
       }
       default:
         throw new Error(`unknown tool: ${name}`);
@@ -296,197 +257,223 @@ async function main() {
   });
 
   // Permission forwarding
-  const PermissionRequestSchema = z.object({
-    method: z.literal("notifications/claude/channel/permission_request"),
-    params: z.object({
-      request_id: z.string(),
-      tool_name: z.string(),
-      description: z.string(),
-      input_preview: z.string(),
+  server.setNotificationHandler(
+    z.object({
+      method: z.literal("notifications/claude/channel/permission_request"),
+      params: z.object({
+        request_id: z.string(), tool_name: z.string(),
+        description: z.string(), input_preview: z.string(),
+      }),
     }),
-  });
-
-  server.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
-    const status = client.getStatus();
-    if (!status.userId) return;
-    const text =
-      `Claude 请求执行 ${params.tool_name}:\n${params.description}\n` +
-      (params.input_preview ? `输入: ${params.input_preview}\n` : "") +
-      `\n回复 yes / no`;
-    try {
-      await client.sendText(status.userId, text, { raw: true });
-      pendingPermissionRequestId = params.request_id;
-    } catch (err) {
-      log(`permission_request forward failed: ${String(err)}`);
+    async ({ params }) => {
+      const s = client.getStatus();
+      if (!s.userId) return;
+      try {
+        await client.sendText(s.userId,
+          `Claude 请求执行 ${params.tool_name}:\n${params.description}\n` +
+          (params.input_preview ? `输入: ${params.input_preview}\n` : "") +
+          `\n回复 yes / no`,
+          { raw: true }
+        );
+        pendingPermissionRequestId = params.request_id;
+      } catch (e) { log(`perm forward failed: ${String(e)}`); }
     }
-  });
+  );
 
-  function clearPendingPermissionRequestId() {
-    pendingPermissionRequestId = undefined;
+  return server;
+}
+
+// ── Main ──────────────────────────────────────────────────────
+async function main() {
+  log("wechat-cc v0.2.0 gateway starting...");
+
+  // 1. Load state
+  let rt = loadRoutes();
+  const binding = loadBinding();
+  let ccCreds = loadCcObCreds();
+  let ccOpenId = ccCreds?.openid || "";
+  if (ccOpenId) log(`CC OB: ${ccOpenId.slice(0, 5)}...`);
+  else log("CC OB not registered yet");
+
+  // 2. Bot OB identity
+  let botObCreds = loadBotObCreds();
+  if (!botObCreds?.openid) {
+    log("Registering Bot OB identity...");
+    const oceanbus = await import("oceanbus");
+    const ob = await oceanbus.createOceanBus({ keyStore: { type: "memory" } });
+    try {
+      const reg = await ob.createIdentity();
+      const openid = await ob.getAddress();
+      botObCreds = { agent_id: reg.agent_id, api_key: reg.api_key, openid, created_at: new Date().toISOString() };
+      saveBotObCreds(botObCreds);
+      log(`Bot OB created: ${openid.slice(0, 5)}...`);
+    } catch (e: any) { log(`Bot OB failed: ${e.message}`); }
+    await ob.destroy();
+  }
+  const botOpenId = botObCreds?.openid || "";
+
+  // 3. Auto-add CC to route table if not present
+  if (ccOpenId && !rt.routes["/cc"]) {
+    rt.routes["/cc"] = {
+      openId: ccOpenId,
+      name: "CC-" + (ccCreds?.agent_id || "local").slice(0, 8),
+      type: "claude-code",
+      addedAt: new Date().toISOString(),
+    };
+    if (!rt.default) rt.default = "/cc";
+    saveRoutes(rt);
+    log(`auto-added /cc route → ${ccOpenId.slice(0, 5)}...`);
   }
 
-  // 5. Event bindings
-  client.on("loginSuccess", (accountId: string) => {
-    log(`login success: ${accountId}`);
-    // Auto-bind: the user who just scanned is paired with CC
-    const status = client.getStatus();
-    if (status.userId && ccOpenId) {
-      const pairing = loadPairing();
-      pairing.ilinkUserId = status.userId;
-      pairing.ccOpenId = ccOpenId;
-      if (ccCreds) pairing.ccAgentId = ccCreds.agent_id;
-      savePairing(pairing);
-      // Sync in-memory pairings for OB reply routing
-      pairings[status.userId] = { ccOpenId, ccName: "CC" };
-      log(`auto-paired: ${status.userId.slice(0, 12)}... ↔ ${ccOpenId.slice(0, 5)}...`);
-      // Send welcome message
-      client.sendText(status.userId,
-        `✅ 已连接 CC (OpenID: ${ccOpenId.slice(0, 5)}...)\n\n现在可以直接给我发指令了。`
-      ).catch(() => {});
-    }
+  // 4. WeixinBotClient
+  const client = new WeixinBotClient({
+    stateDir: path.join(STATE_DIR, "wechat"),
+    tempDir: path.join(os.tmpdir(), "wechat-cc"),
+    clientIdPrefix: "wechat-cc",
   });
+  await client.cleanupTempMedia().catch(() => {});
 
-  client.on("message", async (msg: InboundMessage) => {
-    // Permission reply interception
-    const permMatch = PERMISSION_REPLY_RE.exec(msg.text);
-    if (permMatch) {
-      const requestId = permMatch[2]?.toLowerCase() ?? pendingPermissionRequestId;
-      if (requestId) {
-        await server.notification({
-          method: "notifications/claude/channel/permission" as any,
-          params: {
-            request_id: requestId,
-            behavior: permMatch[1].toLowerCase().startsWith("y") ? "allow" : "deny",
-          },
-        });
-        clearPendingPermissionRequestId();
-        return;
-      }
-    }
-
-    // Normal message → push to CC via MCP channel notification
-    client.startTyping(msg.chatId);
-    const meta: Record<string, string> = {
-      type: "message",
-      chat_id: msg.chatId,
-      sender: msg.chatId,
-    };
-    if (msg.mediaPath) {
-      meta.media_path = msg.mediaPath;
-      meta.media_type = msg.mediaType || "";
-    }
-
-    let content = msg.text;
-    if (msg.mediaPath) {
-      const mt = msg.mediaType ?? "";
-      const label = mt.startsWith("image") ? "图片"
-        : mt.startsWith("video") ? "视频"
-        : mt.startsWith("audio") ? "语音"
-        : "媒体消息";
-      content = `[${label}: ${path.basename(msg.mediaPath)}]`;
-    }
-
-    try {
-      await server.notification({
-        method: "notifications/claude/channel",
-        params: { content, meta },
-      });
-      log(`[MCP] notification sent for ${msg.chatId.slice(0, 12)}...: ${content.slice(0, 50)}`);
-    } catch (e: any) {
-      log(`[MCP] notification failed: ${e.message}`);
-    }
-  });
-
-  client.on("sessionExpired", async (accountId: string) => {
-    log(`session expired: ${accountId}`);
-    await server.notification({
-      method: "notifications/claude/channel",
-      params: {
-        content: "微信连接已断开（session 过期），请调用 login 工具重新扫码连接。",
-        meta: { type: "session_expired" },
-      },
-    });
-  });
-
-  client.on("qrRefresh", async ({ qrcodeUrl, qrAscii }) => {
-    log(`QR refreshed: ${qrcodeUrl}`);
-    const text = qrAscii
-      ? `二维码已过期，新二维码（如被折叠请按 ctrl+o 展开）:\n\n${qrAscii}\n链接: ${qrcodeUrl}`
-      : `二维码已过期，请使用新链接扫码: ${qrcodeUrl}`;
-    try {
-      await server.notification({
-        method: "notifications/claude/channel",
-        params: { content: text, meta: { type: "qr_refresh" } },
-      });
-    } catch (err) {
-      log(`failed to send QR refresh: ${String(err)}`);
-    }
-  });
-
-  client.on("error", (err: unknown) => {
-    log(`client error: ${String(err)}`);
-  });
-
-  // 5b. OB listener: receives CC replies and forwards to WeChat
+  // 5. OB listener: receives Agent replies → WeChat
+  let obListener: any = null;
   if (botOpenId && botObCreds) {
     try {
       const oceanbus = await import("oceanbus");
-      const obListener = await oceanbus.createOceanBus({
+      obListener = await oceanbus.createOceanBus({
         keyStore: { type: "memory" },
         identity: { agent_id: botObCreds.agent_id, api_key: botObCreds.api_key, openid: botOpenId },
       });
       obListener.startListening(async (msg: any) => {
         if (msg.from_openid === botOpenId) return;
         const content: string = msg.content || "";
-        const wxUid = Object.keys(pairings).find(
-          uid => pairings[uid].ccOpenId === msg.from_openid
-        );
-        if (wxUid) {
-          log(`[←OB] ${msg.from_openid.slice(0, 5)}... → WeChat ${wxUid.slice(0, 12)}...`);
+        let parsed: any;
+        try { parsed = JSON.parse(content); } catch (_) { parsed = { text: content }; }
+        const toWxUser = parsed.meta?.to_wx_user || "";
+        const replyText = parsed.text || content;
+        const agentName = parsed.meta?.agent_name || "Agent";
+
+        if (toWxUser) {
+          log(`[←OB] Agent → WeChat ${toWxUser.slice(0, 12)}...`);
           try {
-            const body = content.replace(/^from .+\nto .+\n/m, "").trim();
-            await client.sendText(wxUid, `🔔 CC 回复：\n\n${body}`);
-          } catch (e: any) {
-            log(`OB→WeChat forward failed: ${e.message}`);
-          }
+            await client.sendText(toWxUser, `🔔 ${agentName} 回复：\n\n${replyText}`);
+          } catch (e: any) { log(`OB→WeChat failed: ${e.message}`); }
         }
       });
       log("OB reply listener started");
-    } catch (e: any) {
-      log(`OB listener start failed: ${e.message}`);
-    }
+    } catch (e: any) { log(`OB listener failed: ${e.message}`); }
   }
 
-  // 6. Connect MCP transport
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  log("MCP server connected via stdio");
+  // 6. Event bindings
+  client.on("loginSuccess", (accountId: string) => {
+    log(`login success: ${accountId}`);
+    const s = client.getStatus();
+    if (s.userId) {
+      saveBinding({ ilinkUserId: s.userId, defaultRoute: rt.default, boundAt: new Date().toISOString() });
+      log(`bound: ${s.userId.slice(0, 12)}... → default ${rt.default}`);
+      client.sendText(s.userId,
+        `✅ 已绑定！默认 Agent: ${rt.default}\n` +
+        `发送 /help 查看可用命令和 Agent 列表。`
+      ).catch(() => {});
+    }
+  });
 
-  // TEST: send a simulated message notification to verify channel format
-  setTimeout(async () => {
+  client.on("message", async (msg: InboundMessage) => {
+    const text = (msg.text || "").trim();
+    if (!text) return;
+    log(`[微信] ${msg.chatId.slice(0, 12)}...: ${text.slice(0, 80)}`);
+
+    // Reload routes (may have been updated)
+    rt = loadRoutes();
+
+    // System commands
+    const sysReply = handleSystemCommand(text, msg.chatId, rt);
+    if (sysReply !== null) {
+      await client.sendText(msg.chatId, sysReply).catch(() => {});
+      return;
+    }
+
+    // Check binding
+    const binding = loadBinding();
+    if (!binding) {
+      await client.sendText(msg.chatId, "请先扫码绑定。发送 /help 查看说明。").catch(() => {});
+      return;
+    }
+
+    // Parse route prefix
+    let prefix = "";
+    let body = text;
+    const m = text.match(/^(\/\S+)\s+(.*)/);
+    if (m) { prefix = m[1]; body = m[2]; }
+
+    // Resolve route
+    let route: RouteEntry | null = null;
+    if (prefix) {
+      route = lookupRoute(prefix, rt);
+      if (!route) {
+        await client.sendText(msg.chatId,
+          `未知前缀: ${prefix}\n可用: ${Object.keys(rt.routes).join(", ") || "(无)"}\n默认: ${rt.default}`
+        ).catch(() => {});
+        return;
+      }
+    } else {
+      // No prefix → use default
+      route = lookupRoute(rt.default, rt);
+      if (!route) {
+        await client.sendText(msg.chatId, "没有可用 Agent。先用 /addroute 添加路由。").catch(() => {});
+        return;
+      }
+    }
+
+    // Forward to Agent via OB
+    if (!botOpenId || !botObCreds) {
+      await client.sendText(msg.chatId, "网关 OB 未就绪，请稍后重试。").catch(() => {});
+      return;
+    }
+
     try {
-      await server.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: "🧪 测试消息 — 如果你看到这条消息，说明 MCP Channel notification 已通。",
-          meta: { chat_id: "test_user", sender: "test_user" },
+      const oceanbus = await import("oceanbus");
+      const ob = await oceanbus.createOceanBus({
+        keyStore: { type: "memory" },
+        identity: { agent_id: botObCreds.agent_id, api_key: botObCreds.api_key, openid: botOpenId },
+      });
+      const obMsg = JSON.stringify({
+        action: "command",
+        text: body,
+        meta: {
+          from_wx_user: msg.chatId,
+          route_prefix: prefix || rt.default,
+          agent_name: route.name,
+          message_id: `wx_${Date.now()}`,
         },
       });
-      log("test notification sent");
+      await ob.send(route.openId, obMsg);
+      await ob.destroy();
+      log(`[→OB] → ${route.name} (${route.openId.slice(0, 5)}...)`);
+      await client.sendText(msg.chatId, `已转发给 ${route.name}，等待回复...`).catch(() => {});
     } catch (e: any) {
-      log(`test notification failed: ${e.message}`);
+      log(`OB send failed: ${e.message}`);
+      await client.sendText(msg.chatId, `转发失败: ${e.message}`).catch(() => {});
     }
-  }, 500);
+  });
 
-  // 7. Start Bot (restore existing session or prompt login)
+  client.on("sessionExpired", async () => {
+    log("session expired");
+  });
+
+  client.on("qrRefresh", async ({ qrcodeUrl, qrAscii }) => {
+    log(`QR refreshed: ${qrcodeUrl}`);
+  });
+
+  client.on("error", (err: unknown) => log(`client error: ${String(err)}`));
+
+  // 7. MCP server
+  const server = createMcpServer(client, () => ({ rt, binding: loadBinding(), ccOpenId, botOpenId }));
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  log("MCP connected (login/status/logout tools only)");
+
+  // 8. Start Bot
   let shuttingDown = false;
-  function shutdown() {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    log("shutting down...");
-    client.stop();
-    process.exit(0);
-  }
+  function shutdown() { if (shuttingDown) return; shuttingDown = true; client.stop(); process.exit(0); }
   process.stdin.on("end", shutdown);
   process.stdin.on("close", shutdown);
   process.on("SIGINT", shutdown);
@@ -495,27 +482,12 @@ async function main() {
   const accounts = client.listAccounts();
   const launched = accounts.length > 0 && (await client.start(accounts[0]));
   if (!launched) {
-    log("no accounts, sending login prompt");
-    setTimeout(async () => {
-      try {
-        await server.notification({
-          method: "notifications/claude/channel",
-          params: {
-            content:
-              "微信 Channel 已启动，但尚未登录。\n" +
-              "请调用 login 工具扫码连接微信。\n" +
-              "扫码成功后自动绑定 CC OpenID，无需手动输入 pair 命令。",
-            meta: { type: "login_required" },
-          },
-        });
-      } catch (err) {
-        log(`failed to send login prompt: ${String(err)}`);
-      }
-    }, 1000);
+    log("no accounts, will prompt login via MCP status");
+  } else {
+    log(`gateway ready — ${Object.keys(rt.routes).length} routes, default: ${rt.default || "(none)"}`);
   }
+
+  await new Promise(() => {});
 }
 
-main().catch((err) => {
-  log(`fatal: ${String(err)}`);
-  process.exit(1);
-});
+main().catch((err) => { log(`fatal: ${String(err)}`); process.exit(1); });
