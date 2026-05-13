@@ -103,10 +103,17 @@ async function main() {
       process.exit(1);
     }
     console.log('');
-    console.log('   请用手机微信扫描以下二维码（如被折叠请按 ctrl+o 展开）:');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('');
-    if (result.qrAscii) console.log(result.qrAscii);
-    console.log('   链接: ' + result.qrcodeUrl);
+    if (result.qrAscii) {
+      console.log(result.qrAscii);
+      console.log('');
+    }
+    console.log('📱 二维码链接（如终端无二维码图，复制到浏览器打开）:');
+    console.log('');
+    console.log('   ' + result.qrcodeUrl);
+    console.log('');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('');
     console.log('   等待扫码...');
   }

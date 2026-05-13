@@ -13,6 +13,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "oceanbus": "latest",
+    "qrcode-terminal": "^0.12.0",
     "weixin-bot-plugin": "^2.0.1",
     "zod": "4.3.6"
   },
