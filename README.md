@@ -24,7 +24,7 @@
 发给朋友，一条命令即可加入：
 
 ```bash
-if [ -d ocean-chat ]; then cd ocean-chat && git pull; else git clone https://github.com/ryanbihai/ocean-chat.git && cd ocean-chat; fi && npm install && npm install oceanbus@latest && node cc-agent.cjs --auto-exec
+if [ -d wechat-cc ]; then cd wechat-cc && git pull; else git clone https://github.com/ryanbihai/wechat-cc.git && cd wechat-cc; fi && npm install oceanbus@latest && node cc-agent.cjs --auto-exec
 ```
 
 朋友告诉你 OB OpenID（前 4 位），你在微信 `/addroute /朋友名 OpenID` 添加路由。朋友扫你的 Gateway 二维码，完成。

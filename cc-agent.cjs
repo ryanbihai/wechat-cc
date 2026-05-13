@@ -31,15 +31,29 @@ const GATEWAY_OPENID = getArg('--gateway');
 
 // ── Main ──────────────────────────────────────────────────────
 async function main() {
-  // 1. Load OB identity
-  if (!fs.existsSync(CRED_FILE)) {
-    console.error('❌ 未注册 OB 身份。请先运行 ocean-chat 的 setup 或 wechat-cc 的 wechat-up。');
-    process.exit(1);
+  // 1. Load or auto-register OB identity
+  let creds;
+  if (fs.existsSync(CRED_FILE)) {
+    creds = JSON.parse(fs.readFileSync(CRED_FILE, 'utf-8'));
+    if (!creds.agent_id || !creds.api_key) creds = null;
   }
-  const creds = JSON.parse(fs.readFileSync(CRED_FILE, 'utf-8'));
-  if (!creds.agent_id || !creds.api_key) {
-    console.error('❌ OB 凭证无效。');
-    process.exit(1);
+
+  if (!creds) {
+    console.log('🆔 首次运行，正在注册 OceanBus 身份...');
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const ob = await createOceanBus({ keyStore: { type: 'memory' } });
+    try {
+      const reg = await ob.createIdentity();
+      const openid = await ob.getAddress();
+      creds = { agent_id: reg.agent_id, api_key: reg.api_key, openid, source: 'cc-agent', created_at: new Date().toISOString() };
+      fs.writeFileSync(CRED_FILE, JSON.stringify(creds, null, 2));
+    } catch (e) {
+      console.error('注册失败: ' + e.message);
+      await ob.destroy();
+      process.exit(1);
+    }
+    await ob.destroy();
+    console.log('   身份已保存到: ' + CRED_FILE);
   }
 
   // Auto-name: --name flag > OpenID前4位
@@ -48,6 +62,7 @@ async function main() {
   console.log('🆔 CC Agent');
   console.log('   Name:    ' + agentName);
   console.log('   OpenID:  ' + creds.openid.slice(0, 5) + '...');
+  console.log('   AgentID: ' + creds.agent_id.slice(0, 8) + '...');
   console.log('   模式:    ' + (AUTO_EXEC ? '自动执行 (spawn claude)' : '仅显示消息'));
   console.log('');
 

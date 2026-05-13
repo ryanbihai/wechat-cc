@@ -110,7 +110,7 @@ OpenID 前 4 位是 OB 网络公开地址，暴露无风险。
 ### 发给朋友（安装 CC Agent）
 
 ```bash
-if [ -d ocean-chat ]; then cd ocean-chat && git pull; else git clone https://github.com/ryanbihai/ocean-chat.git && cd ocean-chat; fi && npm install && npm install oceanbus@latest && node cc-agent.cjs --auto-exec
+if [ -d wechat-cc ]; then cd wechat-cc && git pull; else git clone https://github.com/ryanbihai/wechat-cc.git && cd wechat-cc; fi && npm install oceanbus@latest && node cc-agent.cjs --auto-exec
 ```
 
 ### 朋友告诉你 OB OpenID 后，你在微信添加路由
