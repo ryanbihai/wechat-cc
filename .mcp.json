@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "wechat-cc": {
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/index.js"],
+      "env": {
+        "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"
+      }
+    }
+  }
+}
