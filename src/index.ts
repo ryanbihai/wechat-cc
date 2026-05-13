@@ -430,6 +430,22 @@ async function main() {
   await server.connect(transport);
   log("MCP server connected via stdio");
 
+  // TEST: send a simulated message notification to verify channel format
+  setTimeout(async () => {
+    try {
+      await server.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: "🧪 测试消息 — 如果你看到这条消息，说明 MCP Channel notification 已通。",
+          meta: { chat_id: "test_user", sender: "test_user" },
+        },
+      });
+      log("test notification sent");
+    } catch (e: any) {
+      log(`test notification failed: ${e.message}`);
+    }
+  }, 500);
+
   // 7. Start Bot (restore existing session or prompt login)
   let shuttingDown = false;
   function shutdown() {

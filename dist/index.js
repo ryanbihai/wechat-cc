@@ -47116,6 +47116,20 @@ ${body}`);
   const transport = new StdioServerTransport;
   await server.connect(transport);
   log("MCP server connected via stdio");
+  setTimeout(async () => {
+    try {
+      await server.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: "\uD83E\uDDEA \u6D4B\u8BD5\u6D88\u606F \u2014 \u5982\u679C\u4F60\u770B\u5230\u8FD9\u6761\u6D88\u606F\uFF0C\u8BF4\u660E MCP Channel notification \u5DF2\u901A\u3002",
+          meta: { chat_id: "test_user", sender: "test_user" }
+        }
+      });
+      log("test notification sent");
+    } catch (e) {
+      log(`test notification failed: ${e.message}`);
+    }
+  }, 500);
   let shuttingDown = false;
   function shutdown() {
     if (shuttingDown)
