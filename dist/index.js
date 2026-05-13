@@ -47063,13 +47063,12 @@ to cc ${ccOpenId.slice(0, 5)}
       const label = mt2.startsWith("image") ? "\u56FE\u7247" : mt2.startsWith("video") ? "\u89C6\u9891" : mt2.startsWith("audio") ? "\u8BED\u97F3" : "\u5A92\u4F53\u6D88\u606F";
       content = `[${label}: ${path.basename(msg.mediaPath)}]`;
     }
-    const channelContent = `<channel source="wechat" chat_id="${msg.chatId}" sender="${msg.chatId}">${content}</channel>`;
     try {
       await server.notification({
         method: "notifications/claude/channel",
-        params: { content: channelContent, meta: meta3 }
+        params: { content, meta: meta3 }
       });
-      log(`[MCP] notification sent for ${msg.chatId.slice(0, 12)}...`);
+      log(`[MCP] notification sent for ${msg.chatId.slice(0, 12)}...: ${content.slice(0, 50)}`);
     } catch (e) {
       log(`[MCP] notification failed: ${e.message}`);
     }
