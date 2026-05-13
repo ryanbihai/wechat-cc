@@ -139,7 +139,7 @@ async function main() {
   let pendingPermissionRequestId: string | undefined;
 
   const server = new Server(
-    { name: "wechat-cc", version: "0.1.0" },
+    { name: "wechat", version: "0.1.0" },
     {
       capabilities: {
         experimental: {
@@ -333,27 +333,8 @@ async function main() {
       }
     }
 
-    // Normal message → typing + push to CC
+    // Normal message → push to CC via MCP channel notification
     client.startTyping(msg.chatId);
-
-    // Try OB L0 path first (store-and-forward)
-    if (botOpenId && ccOpenId) {
-      try {
-        const oceanbus = await import("oceanbus");
-        const ob = await oceanbus.createOceanBus({
-          keyStore: { type: "memory" },
-          identity: { agent_id: botObCreds.agent_id, api_key: botObCreds.api_key, openid: botOpenId },
-        });
-        const routeHeader = `from wechat ${msg.chatId.slice(0, 5)}\nto cc ${ccOpenId.slice(0, 5)}\n`;
-        await ob.send(ccOpenId, routeHeader + msg.text);
-        await ob.destroy();
-        log(`[→OB] → CC (${ccOpenId.slice(0, 5)}...)`);
-      } catch (e: any) {
-        log(`OB send failed: ${e.message}`);
-      }
-    }
-
-    // Also push via MCP notification (direct, real-time)
     const meta: Record<string, string> = {
       chat_id: msg.chatId,
       sender: msg.chatId,

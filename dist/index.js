@@ -46848,7 +46848,7 @@ async function main() {
   await client.cleanupTempMedia().catch((err2) => log(`temp cleanup failed: ${String(err2)}`));
   const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)(?:\s+([a-km-z]{5}))?\s*$/i;
   let pendingPermissionRequestId;
-  const server = new Server({ name: "wechat-cc", version: "0.1.0" }, {
+  const server = new Server({ name: "wechat", version: "0.1.0" }, {
     capabilities: {
       experimental: {
         "claude/channel": {},
@@ -47032,23 +47032,6 @@ ${params.description}
       }
     }
     client.startTyping(msg.chatId);
-    if (botOpenId && ccOpenId) {
-      try {
-        const oceanbus = await Promise.resolve().then(() => __toESM(require_dist3(), 1));
-        const ob = await oceanbus.createOceanBus({
-          keyStore: { type: "memory" },
-          identity: { agent_id: botObCreds.agent_id, api_key: botObCreds.api_key, openid: botOpenId }
-        });
-        const routeHeader = `from wechat ${msg.chatId.slice(0, 5)}
-to cc ${ccOpenId.slice(0, 5)}
-`;
-        await ob.send(ccOpenId, routeHeader + msg.text);
-        await ob.destroy();
-        log(`[\u2192OB] \u2192 CC (${ccOpenId.slice(0, 5)}...)`);
-      } catch (e) {
-        log(`OB send failed: ${e.message}`);
-      }
-    }
     const meta3 = {
       chat_id: msg.chatId,
       sender: msg.chatId
