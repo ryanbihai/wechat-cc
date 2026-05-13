@@ -55,8 +55,17 @@ async function main() {
   }
 
   const agentName = getArg('--name') || ('CC-' + creds.openid.slice(0, 4));
-  console.log('   名称:    ' + agentName);
-  console.log('   OpenID:  ' + creds.openid.slice(0, 5) + '...');
+  console.log('');
+  console.log('╔══════════════════════════════════════╗');
+  console.log('║  你的窗口名: ' + agentName.padEnd(24) + '║');
+  console.log('║  OpenID:    ' + creds.openid.slice(0,5).padEnd(24) + '║');
+  console.log('╚══════════════════════════════════════╝');
+  console.log('');
+  console.log('💡 微信端:');
+  console.log('   /' + agentName.toLowerCase().replace(/\s+/g, '-') + ' 消息  → 发给这个窗口');
+  console.log('   /use /' + agentName.toLowerCase().replace(/\s+/g, '-') + '    → 设为主窗口');
+  console.log('');
+
   // Announce to WeChat user if wxOpenId provided
   if (WX_OPENID) {
     try {
