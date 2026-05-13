@@ -373,10 +373,17 @@ async function main() {
       content = `[${label}: ${path.basename(msg.mediaPath)}]`;
     }
 
-    await server.notification({
-      method: "notifications/claude/channel",
-      params: { content, meta },
-    });
+    // Channel notification: CC expects <channel source="wechat" chat_id="..." sender="...">content</channel>
+    const channelContent = `<channel source="wechat" chat_id="${msg.chatId}" sender="${msg.chatId}">${content}</channel>`;
+    try {
+      await server.notification({
+        method: "notifications/claude/channel",
+        params: { content: channelContent, meta },
+      });
+      log(`[MCP] notification sent for ${msg.chatId.slice(0, 12)}...`);
+    } catch (e: any) {
+      log(`[MCP] notification failed: ${e.message}`);
+    }
   });
 
   client.on("sessionExpired", async (accountId: string) => {
