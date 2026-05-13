@@ -1,117 +1,85 @@
 # 🌊 wechat-cc
 
-**微信 ↔ OceanBus 网关。** 扫码即连，从微信操控 Claude Code 和任何 OB Agent。
+**微信扫码操控 Claude Code。** 一条命令，全自动完成。
 
 [![GitHub](https://img.shields.io/badge/github-ryanbihai%2Fwechat--cc-blue)](https://github.com/ryanbihai/wechat-cc)
 [![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.2-brightgreen)](https://github.com/ryanbihai/wechat-cc/releases)
+[![Version](https://img.shields.io/badge/version-0.3.1-brightgreen)](https://github.com/ryanbihai/wechat-cc/releases)
 
 ---
 
-## 安装
+## 开始使用
+
+把下面这条命令发给 Claude Code 即可：
+
+```bash
+if [ -d wechat-cc ]; then cd wechat-cc && git pull; else git clone https://github.com/ryanbihai/wechat-cc.git && cd wechat-cc; fi && npm install oceanbus@latest weixin-bot-plugin@latest && node standalone.cjs
+```
+
+Claude Code 会自动：安装依赖 → 注册身份 → 显示二维码。微信扫码 → 完成。
+
+也可以在微信里聊天操控 Claude Code：
+
+```
+帮我看看项目结构              → spawn claude 执行 → 回复推回微信
+重构 user-service             → 同上
+```
+
+---
+
+## 邀请朋友
+
+把上面那条命令发给他们就行。**你不需要做任何事。**
+
+---
+
+## 多窗口
+
+不同项目窗口用不同数据目录：
+
+```bash
+# 窗口 A
+node standalone.cjs --data-dir ~/project-a/.wechat-cc
+
+# 窗口 B
+node standalone.cjs --data-dir ~/project-b/.wechat-cc
+```
+
+---
+
+## Gateway 模式（高级）
+
+如果需要统一路由管理多个 Agent：
 
 ```
 /plugin marketplace add ryanbihai/claude-plugins
 /plugin install wechat-cc@oceanbus-plugins
 ```
 
-重启 Claude Code。说"登录微信"，扫码，完成。
-
----
-
-## A 消息 — 邀请朋友
-
-发给朋友，**你不需要做任何事**。朋友把这条命令发给自己的 CC 即可：
-
-```bash
-if [ -d wechat-cc ]; then cd wechat-cc && git pull; else git clone https://github.com/ryanbihai/wechat-cc.git && cd wechat-cc; fi && npm install oceanbus@latest weixin-bot-plugin@latest && node standalone.cjs
-```
-
-CC 会自动安装、注册身份、出二维码。朋友微信扫码 → 完成。**零配置，自服务。**
-
-朋友告诉你 OB OpenID（前 4 位），你在微信 `/addroute /朋友名 OpenID` 添加路由。朋友扫你的 Gateway 二维码，完成。
-
----
-
-## 使用
-
-### 微信操控 CC
-
-```
-帮我重构 user-service          → 发给当前默认 Agent
-/cc 检查代码                    → 临时发给 /cc
-/use /cc-svg                   → 切换到 CC-svg 窗口
-/who                           → 查看当前会话 + 所有 Agent
-/help                          → 完整命令
-```
-
-### 多窗口
-
-```bash
-# 窗口 A（oceanbus 项目）
-node cc-agent.cjs --data-dir ~/oceanbus/.oceanbus-cc --auto-exec --name "CC-oceanbus"
-
-# 窗口 B（svg 项目）
-node cc-agent.cjs --data-dir ~/svg/.oceanbus-cc --auto-exec --name "CC-svg"
-```
-
-### 多 Agent
-
-```
-/addroute /trae  trae_openid_xxx  Trae-main
-/addroute /cursor cursor_openid_xxx Cursor
-```
+支持前缀路由、多 Agent 分发、会话管理。详见 [PRD.md](./PRD.md)。
 
 ---
 
 ## 架构
 
 ```
-微信 ⇄ iLink ⇄ [wechat-cc 网关] ⇄ OceanBus L0 ⇄ Agent(CC/Trae/Cursor/...)
-                  │
-             路由表 + 会话状态
+微信 ⇄ iLink ⇄ wechat-cc ⇄ spawn claude
+              │
+              └── OceanBus L0 身份（可选，用于多 Agent）
 ```
 
 | 层 | 技术 |
 |----|------|
-| 微信通信 | `weixin-bot-plugin` — iLink API 长轮询 |
-| CC 集成 | `@modelcontextprotocol/sdk` — login/reply/status/logout |
-| P2P 路由 | `oceanbus` — L0 身份 + 消息收发 |
-| CC Agent | `cc-agent.cjs` — spawn claude 自动执行 |
-| 构建 | `bun build` → 单文件分发 |
-
----
-
-## 权限转发
-
-CC 请求执行 Bash/Write/Edit 时，弹窗转发到微信：
-
-> Claude 请求执行 Bash: rm -rf node_modules
-> 回复 yes / no
-
-手机上回 `y`，CC 继续执行。真正的远程操控。
-
----
-
-## 与 weixin-claude-code 的区别
-
-| | weixin-claude-code | wechat-cc |
-|------|------|------|
-| 消息路由 | iLink ↔ CC 直连 | **iLink ↔ OB L0 ↔ Agent** |
-| 多 Agent | 不支持 | **前缀路由，多 Agent/多窗口** |
-| 离线消息 | 丢失 | **OB 存储转发，不丢** |
-| 会话模型 | 无 | **Model C：默认 + 覆盖** |
-| 身份 | 无 OB | **Bot + CC 各有 OB OpenID** |
-| 欢迎消息 | 无 | **扫码绑定欢迎 + 快速上手** |
+| 微信通信 | `weixin-bot-plugin` |
+| P2P 身份 | `oceanbus` (L0) |
+| 执行引擎 | `spawn claude` |
 
 ---
 
 ## 相关项目
 
-- [OceanBus SDK](https://github.com/ryanbihai/oceanbus-sdk) — P2P Agent 通信
-- [ocean-chat](https://github.com/ryanbihai/ocean-chat) — Agent 会面协商工具
-- [weixin-bot-plugin](https://github.com/Dcatfly/weixin_bot_plugin) — 微信 Bot SDK
-- [weixin-claude-code](https://github.com/Dcatfly/weixin_claude_code) — 微信 CC 插件（灵感来源）
+- [weixin-bot-plugin](https://github.com/Dcatfly/weixin_bot_plugin) — 微信 Bot SDK（灵感来源）
+- [OceanBus](https://github.com/ryanbihai/oceanbus-monorepo) — P2P Agent 通信网络
 
 ---
 
