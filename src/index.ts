@@ -119,7 +119,7 @@ function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): st
         : "  (无)";
       const def = rt.default || "(未设置)";
       const session = getSession(wxUserId);
-      return `当前会话: ${session.current}\n\n可用 Agent:\n${list}\n\n默认: ${def}\n\n命令: /help /use /who /routes /addroute /removeroute /default\n\n直接发消息 → 当前会话\n/xxx 消息 → 临时发给指定 Agent`;
+      return `当前会话: ${session.current}\n\n可用 Agent:\n${list}\n\n默认: ${def}\n\n命令: /help /use /who /routes /addroute /removeroute /default\n\n直接发消息 → 当前会话\n/xxx 消息 → 临时发给指定 Agent\n\n💡 重名 Agent? 删除旧路由后重新 /addroute 指定新名字`;
     }
     case "/use": {
       if (parts.length < 2) return `用法: /use /xxx\n当前会话: ${getSession(wxUserId).current}`;
@@ -347,7 +347,7 @@ async function main() {
   if (ccOpenId && !rt.routes["/cc"]) {
     rt.routes["/cc"] = {
       openId: ccOpenId,
-      name: "CC-" + (ccCreds?.agent_id || "local").slice(0, 6),
+      name: "CC-" + ccOpenId.slice(0, 4),
       type: "claude-code",
       addedAt: new Date().toISOString(),
     };

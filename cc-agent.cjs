@@ -42,9 +42,8 @@ async function main() {
     process.exit(1);
   }
 
-  // Auto-name: from --name flag, or generate from agent_id
-  const agentName = getArg('--name')
-    || 'CC-' + creds.agent_id.slice(0, 6);
+  // Auto-name: --name flag > OpenID前4位
+  const agentName = getArg('--name') || ('CC-' + creds.openid.slice(0, 4));
 
   console.log('🆔 CC Agent');
   console.log('   Name:    ' + agentName);

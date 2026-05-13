@@ -46830,7 +46830,9 @@ ${list}
 \u547D\u4EE4: /help /use /who /routes /addroute /removeroute /default
 
 \u76F4\u63A5\u53D1\u6D88\u606F \u2192 \u5F53\u524D\u4F1A\u8BDD
-/xxx \u6D88\u606F \u2192 \u4E34\u65F6\u53D1\u7ED9\u6307\u5B9A Agent`;
+/xxx \u6D88\u606F \u2192 \u4E34\u65F6\u53D1\u7ED9\u6307\u5B9A Agent
+
+\uD83D\uDCA1 \u91CD\u540D Agent? \u5220\u9664\u65E7\u8DEF\u7531\u540E\u91CD\u65B0 /addroute \u6307\u5B9A\u65B0\u540D\u5B57`;
     }
     case "/use": {
       if (parts.length < 2)
@@ -47064,7 +47066,7 @@ async function main() {
   if (ccOpenId && !rt2.routes["/cc"]) {
     rt2.routes["/cc"] = {
       openId: ccOpenId,
-      name: "CC-" + (ccCreds?.agent_id || "local").slice(0, 6),
+      name: "CC-" + ccOpenId.slice(0, 4),
       type: "claude-code",
       addedAt: new Date().toISOString()
     };
