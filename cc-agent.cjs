@@ -27,7 +27,8 @@ function getArg(name) {
 const DATA_DIR = getArg('--data-dir') || path.join(process.cwd(), '.cc-data-' + process.pid);
 const CRED_FILE = path.join(DATA_DIR, 'credentials.json');
 const AUTO_EXEC = process.argv.includes('--auto-exec');
-const GATEWAY_OPENID = getArg('--gateway');
+const WX_OPENID = getArg('--wx');       // 微信 OB OpenID，用于 announce
+const GATEWAY_OPENID = getArg('--gateway') || WX_OPENID;  // 回复目标
 
 // ── Main ──────────────────────────────────────────────────────
 async function main() {
@@ -59,12 +60,34 @@ async function main() {
   // Auto-name: --name flag > OpenID前4位
   const agentName = getArg('--name') || ('CC-' + creds.openid.slice(0, 4));
 
-  console.log('🆔 CC Agent');
-  console.log('   Name:    ' + agentName);
-  console.log('   OpenID:  ' + creds.openid.slice(0, 5) + '...');
-  console.log('   AgentID: ' + creds.agent_id.slice(0, 8) + '...');
-  console.log('   模式:    ' + (AUTO_EXEC ? '自动执行 (spawn claude)' : '仅显示消息'));
   console.log('');
+  console.log('╔══════════════════════════════════════╗');
+  console.log('║  你的窗口名: ' + agentName.padEnd(24) + '║');
+  console.log('║  OpenID:    ' + creds.openid.slice(0,5).padEnd(24) + '║');
+  console.log('╚══════════════════════════════════════╝');
+  console.log('');
+
+  // Announce to Gateway if wxOpenId provided
+  if (WX_OPENID) {
+    try {
+      const obAnn = await createOceanBus({
+        keyStore: { type: 'memory' },
+        identity: { agent_id: creds.agent_id, api_key: creds.api_key, openid: creds.openid },
+      });
+      await obAnn.send(WX_OPENID, JSON.stringify({
+        action: 'announce',
+        meta: { agent_name: agentName, agent_openid: creds.openid, agent_type: 'claude-code' },
+      }));
+      await obAnn.destroy();
+      console.log('📡 已向微信 Gateway 发送 announce');
+      console.log('   窗口名: ' + agentName);
+      console.log('   微信端: /' + agentName.toLowerCase().replace(/\s+/g, '-') + ' 消息 → 发给这个窗口');
+      console.log('');
+    } catch (e) {
+      console.log('⚠️  announce 失败: ' + e.message);
+      console.log('');
+    }
+  }
 
   // 2. Connect OB
   const ob = await createOceanBus({

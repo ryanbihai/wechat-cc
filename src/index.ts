@@ -114,6 +114,15 @@ function getSession(wxUserId: string): SessionState {
   return sessions[wxUserId];
 }
 
+// ── Route Helpers ──────────────────────────────────────────────
+function findRoute(input: string, rt: RouteTable): { prefix: string; route: RouteEntry } | null {
+  const lower = input.toLowerCase();
+  for (const [key, val] of Object.entries(rt.routes)) {
+    if (key.toLowerCase() === lower) return { prefix: key, route: val };
+  }
+  return null;
+}
+
 // ── System Commands ────────────────────────────────────────────
 function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): string | null {
   const parts = text.trim().split(/\s+/);
@@ -130,11 +139,12 @@ function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): st
     }
     case "/use": {
       if (parts.length < 2) return `用法: /use /xxx\n当前会话: ${getSession(wxUserId).current}`;
-      const prefix = parts[1];
-      if (!prefix.startsWith("/")) return "前缀必须以 / 开头";
-      if (!rt.routes[prefix]) return `路由不存在: ${prefix}。可用: ${Object.keys(rt.routes).join(", ") || "(无)"}`;
-      getSession(wxUserId).current = prefix;
-      return `✅ 已切换到 ${prefix} → ${rt.routes[prefix].name}`;
+      const input = parts[1];
+      if (!input.startsWith("/")) return "前缀必须以 / 开头";
+      const found = findRoute(input, rt);
+      if (!found) return `路由不存在: ${input}。可用: ${Object.keys(rt.routes).join(", ") || "(无)"}`;
+      getSession(wxUserId).current = found.prefix;
+      return `✅ 已切换到 ${found.prefix} → ${found.route.name}`;
     }
     case "/myid": {
       const wxId = loadWxIdentity();
@@ -541,15 +551,18 @@ async function main() {
     let body = text;
     let isOverride = false;
     const m = text.match(/^(\/\S+)\s+(.*)/);
-    if (m && rt.routes[m[1]]) {
-      // Known prefix → single-message override (doesn't change session)
-      prefix = m[1];
-      body = m[2];
-      isOverride = true;
-    } else {
-      // No prefix (or unknown prefix) → use current session
+    if (m) {
+      const found = findRoute(m[1], rt);
+      if (found) {
+        prefix = found.prefix;
+        body = m[2];
+        isOverride = true;
+      }
+    }
+    if (!prefix) {
       const session = getSession(msg.chatId);
-      prefix = session.current;
+      const found = findRoute(session.current, rt);
+      prefix = found ? found.prefix : session.current;
       body = text;
     }
 

@@ -46823,6 +46823,14 @@ function getSession(wxUserId) {
   }
   return sessions[wxUserId];
 }
+function findRoute(input, rt2) {
+  const lower = input.toLowerCase();
+  for (const [key, val] of Object.entries(rt2.routes)) {
+    if (key.toLowerCase() === lower)
+      return { prefix: key, route: val };
+  }
+  return null;
+}
 function handleSystemCommand(text, wxUserId, rt2) {
   const parts = text.trim().split(/\s+/);
   switch (parts[0]) {
@@ -46850,13 +46858,14 @@ ${list}
       if (parts.length < 2)
         return `\u7528\u6CD5: /use /xxx
 \u5F53\u524D\u4F1A\u8BDD: ${getSession(wxUserId).current}`;
-      const prefix = parts[1];
-      if (!prefix.startsWith("/"))
+      const input = parts[1];
+      if (!input.startsWith("/"))
         return "\u524D\u7F00\u5FC5\u987B\u4EE5 / \u5F00\u5934";
-      if (!rt2.routes[prefix])
-        return `\u8DEF\u7531\u4E0D\u5B58\u5728: ${prefix}\u3002\u53EF\u7528: ${Object.keys(rt2.routes).join(", ") || "(\u65E0)"}`;
-      getSession(wxUserId).current = prefix;
-      return `\u2705 \u5DF2\u5207\u6362\u5230 ${prefix} \u2192 ${rt2.routes[prefix].name}`;
+      const found = findRoute(input, rt2);
+      if (!found)
+        return `\u8DEF\u7531\u4E0D\u5B58\u5728: ${input}\u3002\u53EF\u7528: ${Object.keys(rt2.routes).join(", ") || "(\u65E0)"}`;
+      getSession(wxUserId).current = found.prefix;
+      return `\u2705 \u5DF2\u5207\u6362\u5230 ${found.prefix} \u2192 ${found.route.name}`;
     }
     case "/myid": {
       const wxId = loadWxIdentity();
@@ -47273,13 +47282,18 @@ ${routesList || "  (\u6682\u65E0)"}
     let body = text;
     let isOverride = false;
     const m2 = text.match(/^(\/\S+)\s+(.*)/);
-    if (m2 && rt2.routes[m2[1]]) {
-      prefix = m2[1];
-      body = m2[2];
-      isOverride = true;
-    } else {
+    if (m2) {
+      const found = findRoute(m2[1], rt2);
+      if (found) {
+        prefix = found.prefix;
+        body = m2[2];
+        isOverride = true;
+      }
+    }
+    if (!prefix) {
       const session = getSession(msg.chatId);
-      prefix = session.current;
+      const found = findRoute(session.current, rt2);
+      prefix = found ? found.prefix : session.current;
       body = text;
     }
     const route = lookupRoute(prefix, rt2);
