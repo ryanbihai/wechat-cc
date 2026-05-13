@@ -47143,6 +47143,43 @@ async function main() {
         } catch (_2) {
           parsed = { action: "reply", text: content };
         }
+        const meta3 = parsed.meta || {};
+        const toWxUser = meta3.to_wx_user || "";
+        if (toWxUser) {
+          const replyText = parsed.text || content;
+          const agentName = meta3.agent_name || "Agent";
+          log(`[\u2190OB] Agent \u2192 WeChat ${toWxUser.slice(0, 12)}...`);
+          try {
+            await client.sendText(toWxUser, `\uD83D\uDD14 ${agentName} \u56DE\u590D\uFF1A
+
+${replyText}`);
+          } catch (e) {
+            log(`OB\u2192WeChat failed: ${e.message}`);
+          }
+        }
+      });
+      log("OB reply listener started (botOpenId)");
+    } catch (e) {
+      log(`OB listener failed: ${e.message}`);
+    }
+  }
+  if (wxOpenId && wxIdentity) {
+    try {
+      const oceanbus = await Promise.resolve().then(() => __toESM(require_dist3(), 1));
+      const obWx = await oceanbus.createOceanBus({
+        keyStore: { type: "memory" },
+        identity: { agent_id: wxIdentity.agent_id, api_key: wxIdentity.api_key, openid: wxOpenId }
+      });
+      obWx.startListening(async (msg) => {
+        if (msg.from_openid === wxOpenId)
+          return;
+        const content = msg.content || "";
+        let parsed;
+        try {
+          parsed = JSON.parse(content);
+        } catch (_2) {
+          parsed = { action: "reply", text: content };
+        }
         const action = parsed.action || "reply";
         const meta3 = parsed.meta || {};
         if (action === "announce") {
@@ -47155,12 +47192,10 @@ async function main() {
             if (!rt2.default)
               rt2.default = prefix;
             saveRoutes(rt2);
-            log(`[announce] auto-added route: ${prefix} \u2192 ${agentName2} (${agentOpenId.slice(0, 5)}...)`);
+            log(`[announce] auto-added route: ${prefix} \u2192 ${agentName2}`);
             const binding2 = loadBinding();
             if (binding2?.ilinkUserId) {
-              client.sendText(binding2.ilinkUserId, `\uD83D\uDD14 ${agentName2} \u5DF2\u8FDE\u63A5\uFF01
-\u4F7F\u7528 /use ${prefix} \u5207\u6362\u4E3A\u4E3BAgent
-\u6216\u76F4\u63A5 /${agentName2.toLowerCase().replace(/\s+/g, "-")} \u6D88\u606F\u53D1\u9001\u6307\u4EE4`).catch(() => {});
+              client.sendText(binding2.ilinkUserId, `\uD83D\uDD14 ${agentName2} \u5DF2\u8FDE\u63A5\uFF01/use ${prefix} \u5207\u6362\u4E3A\u4E3BAgent`).catch(() => {});
             }
           }
           return;
@@ -47169,7 +47204,7 @@ async function main() {
         const replyText = parsed.text || content;
         const agentName = meta3.agent_name || "Agent";
         if (toWxUser) {
-          log(`[\u2190OB] Agent \u2192 WeChat ${toWxUser.slice(0, 12)}...`);
+          log(`[\u2190wxOB] Agent \u2192 WeChat ${toWxUser.slice(0, 12)}...`);
           try {
             await client.sendText(toWxUser, `\uD83D\uDD14 ${agentName} \u56DE\u590D\uFF1A
 
@@ -47179,7 +47214,7 @@ ${replyText}`);
           }
         }
       });
-      log("OB reply listener started");
+      log("OB reply listener started (wxOpenId)");
     } catch (e) {
       log(`OB listener failed: ${e.message}`);
     }
