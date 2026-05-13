@@ -112,6 +112,16 @@ async function main() {
   }
   const botOpenId: string = botObCreds?.openid || "";
 
+  // In-memory pairings (synced with disk), for OB reply routing
+  const pairings: Record<string, { ccOpenId: string; ccName: string }> = {};
+  (function loadPairingsIntoMemory() {
+    const p = loadPairing();
+    if (p.ilinkUserId && p.ccOpenId) {
+      pairings[p.ilinkUserId] = { ccOpenId: p.ccOpenId, ccName: "CC" };
+      log(`loaded pairing: ${p.ilinkUserId.slice(0, 12)}... ↔ ${p.ccOpenId.slice(0, 5)}...`);
+    }
+  })();
+
   // 3. WeixinBotClient
   const client = new WeixinBotClient({
     stateDir: path.join(STATE_DIR, "wechat"),
@@ -295,6 +305,8 @@ async function main() {
       pairing.ccOpenId = ccOpenId;
       if (ccCreds) pairing.ccAgentId = ccCreds.agent_id;
       savePairing(pairing);
+      // Sync in-memory pairings for OB reply routing
+      pairings[status.userId] = { ccOpenId, ccName: "CC" };
       log(`auto-paired: ${status.userId.slice(0, 12)}... ↔ ${ccOpenId.slice(0, 5)}...`);
       // Send welcome message
       client.sendText(status.userId,
@@ -396,6 +408,36 @@ async function main() {
   client.on("error", (err: unknown) => {
     log(`client error: ${String(err)}`);
   });
+
+  // 5b. OB listener: receives CC replies and forwards to WeChat
+  if (botOpenId && botObCreds) {
+    try {
+      const oceanbus = await import("oceanbus");
+      const obListener = await oceanbus.createOceanBus({
+        keyStore: { type: "memory" },
+        identity: { agent_id: botObCreds.agent_id, api_key: botObCreds.api_key, openid: botOpenId },
+      });
+      obListener.startListening(async (msg: any) => {
+        if (msg.from_openid === botOpenId) return;
+        const content: string = msg.content || "";
+        const wxUid = Object.keys(pairings).find(
+          uid => pairings[uid].ccOpenId === msg.from_openid
+        );
+        if (wxUid) {
+          log(`[←OB] ${msg.from_openid.slice(0, 5)}... → WeChat ${wxUid.slice(0, 12)}...`);
+          try {
+            const body = content.replace(/^from .+\nto .+\n/m, "").trim();
+            await client.sendText(wxUid, `🔔 CC 回复：\n\n${body}`);
+          } catch (e: any) {
+            log(`OB→WeChat forward failed: ${e.message}`);
+          }
+        }
+      });
+      log("OB reply listener started");
+    } catch (e: any) {
+      log(`OB listener start failed: ${e.message}`);
+    }
+  }
 
   // 6. Connect MCP transport
   const transport = new StdioServerTransport();
