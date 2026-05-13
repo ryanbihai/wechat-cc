@@ -18,18 +18,23 @@ if [ -d wechat-cc ]; then cd wechat-cc && git pull; else git clone https://githu
 
 Claude Code 会自动：安装依赖 → 注册身份 → 显示二维码。微信扫码 → 完成。
 
-也可以在微信里聊天操控 Claude Code：
-
-```
-帮我看看项目结构              → spawn claude 执行 → 回复推回微信
-重构 user-service             → 同上
-```
-
 ---
 
 ## 邀请朋友
 
 把上面那条命令发给他们就行。**你不需要做任何事。**
+
+---
+
+## 连接已有 Gateway（高级）
+
+如果你在微信 `/myid` 拿到了 wxOpenId，想让 Agent 自动注册到网关：
+
+```bash
+node standalone.cjs --wx WvuQ6QI...
+```
+
+Agent 启动时自动向网关 announce，微信端无需手动 `/addroute`。
 
 ---
 
