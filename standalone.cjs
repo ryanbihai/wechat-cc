@@ -25,7 +25,7 @@ function getArg(name) {
   return (idx >= 0 && idx + 1 < process.argv.length) ? process.argv[idx + 1] : null;
 }
 
-const DATA_DIR = getArg('--data-dir') || path.join(os.homedir(), '.oceanbus-chat');
+const DATA_DIR = getArg('--data-dir') || path.join(process.cwd(), '.cc-data-' + process.pid);
 const CRED_FILE = path.join(DATA_DIR, 'credentials.json');
 const STATE_DIR = path.join(DATA_DIR, 'wechat-state');
 const WX_OPENID = getArg('--wx');  // 微信用户的 OB OpenID
