@@ -1,11 +1,8 @@
 {
   "mcpServers": {
-    "wechat-cc": {
+    "wechat": {
       "command": "bun",
-      "args": ["run", "start"],
-      "env": {
-        "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"
-      }
+      "args": ["run", "--cwd", "${CLAUDE_PLUGIN_ROOT}", "--shell=bun", "--silent", "start"]
     }
   }
 }
