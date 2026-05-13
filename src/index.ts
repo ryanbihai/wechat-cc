@@ -94,6 +94,19 @@ function loadBotObCreds() {
 }
 function saveBotObCreds(data: unknown) { ensureDir(); fs.writeFileSync(BOT_OB_FILE, JSON.stringify(data, null, 2), "utf-8"); }
 
+// ── Session State (Model C) ───────────────────────────────────
+interface SessionState {
+  current: string; // current default route prefix
+}
+const sessions: Record<string, SessionState> = {};
+
+function getSession(wxUserId: string): SessionState {
+  if (!sessions[wxUserId]) {
+    sessions[wxUserId] = { current: loadRoutes().default || "/cc" };
+  }
+  return sessions[wxUserId];
+}
+
 // ── System Commands ────────────────────────────────────────────
 function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): string | null {
   const parts = text.trim().split(/\s+/);
@@ -102,10 +115,28 @@ function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): st
     case "/help": {
       const prefixes = Object.keys(rt.routes);
       const list = prefixes.length > 0
-        ? prefixes.map(p => `  ${p} → ${rt.routes[p].name} (${rt.routes[p].openId.slice(0, 5)}...)`).join("\n")
+        ? prefixes.map(p => `  ${p} → ${rt.routes[p].name}`).join("\n")
         : "  (无)";
       const def = rt.default || "(未设置)";
-      return `可用 Agent:\n${list}\n\n默认: ${def}\n\n系统命令: /help /routes /addroute /removeroute /default /status`;
+      const session = getSession(wxUserId);
+      return `当前会话: ${session.current}\n\n可用 Agent:\n${list}\n\n默认: ${def}\n\n命令: /help /use /who /routes /addroute /removeroute /default\n\n直接发消息 → 当前会话\n/xxx 消息 → 临时发给指定 Agent`;
+    }
+    case "/use": {
+      if (parts.length < 2) return `用法: /use /xxx\n当前会话: ${getSession(wxUserId).current}`;
+      const prefix = parts[1];
+      if (!prefix.startsWith("/")) return "前缀必须以 / 开头";
+      if (!rt.routes[prefix]) return `路由不存在: ${prefix}。可用: ${Object.keys(rt.routes).join(", ") || "(无)"}`;
+      getSession(wxUserId).current = prefix;
+      return `✅ 已切换到 ${prefix} → ${rt.routes[prefix].name}`;
+    }
+    case "/who": {
+      const session = getSession(wxUserId);
+      const route = rt.routes[session.current];
+      const info = route ? `${session.current} → ${route.name}` : session.current;
+      const all = Object.keys(rt.routes).map(p =>
+        p === session.current ? `* ${p} → ${rt.routes[p].name}` : `  ${p} → ${rt.routes[p].name}`
+      ).join("\n");
+      return `当前会话: ${info}\n\n所有 Agent:\n${all}`;
     }
     case "/routes": {
       const entries = Object.entries(rt.routes);
@@ -316,7 +347,7 @@ async function main() {
   if (ccOpenId && !rt.routes["/cc"]) {
     rt.routes["/cc"] = {
       openId: ccOpenId,
-      name: "CC-" + (ccCreds?.agent_id || "local").slice(0, 8),
+      name: "CC-" + (ccCreds?.agent_id || "local").slice(0, 6),
       type: "claude-code",
       addedAt: new Date().toISOString(),
     };
@@ -369,9 +400,18 @@ async function main() {
     if (s.userId) {
       saveBinding({ ilinkUserId: s.userId, defaultRoute: rt.default, boundAt: new Date().toISOString() });
       log(`bound: ${s.userId.slice(0, 12)}... → default ${rt.default}`);
+      const routesList = Object.keys(rt.routes).map(p => `  ${p} → ${rt.routes[p].name}`).join("\n");
       client.sendText(s.userId,
-        `✅ 已绑定！默认 Agent: ${rt.default}\n` +
-        `发送 /help 查看可用命令和 Agent 列表。`
+        `🎉 欢迎来到 OceanBus 网关！\n\n` +
+        `✅ 已自动绑定\n` +
+        `📍 当前会话: ${rt.default}\n\n` +
+        `可用 Agent:\n${routesList || "  (暂无)"}\n\n` +
+        `快速上手:\n` +
+        `  直接发消息 → 发给当前会话\n` +
+        `  /cc 消息 → 临时发给 /cc\n` +
+        `  /use /xxx → 切换默认会话\n` +
+        `  /who → 查看所有 Agent\n` +
+        `  /help → 完整命令列表`
       ).catch(() => {});
     }
   });
@@ -398,29 +438,29 @@ async function main() {
       return;
     }
 
-    // Parse route prefix
+    // Parse route prefix (Model C: default session + single override)
     let prefix = "";
     let body = text;
+    let isOverride = false;
     const m = text.match(/^(\/\S+)\s+(.*)/);
-    if (m) { prefix = m[1]; body = m[2]; }
-
-    // Resolve route
-    let route: RouteEntry | null = null;
-    if (prefix) {
-      route = lookupRoute(prefix, rt);
-      if (!route) {
-        await client.sendText(msg.chatId,
-          `未知前缀: ${prefix}\n可用: ${Object.keys(rt.routes).join(", ") || "(无)"}\n默认: ${rt.default}`
-        ).catch(() => {});
-        return;
-      }
+    if (m && rt.routes[m[1]]) {
+      // Known prefix → single-message override (doesn't change session)
+      prefix = m[1];
+      body = m[2];
+      isOverride = true;
     } else {
-      // No prefix → use default
-      route = lookupRoute(rt.default, rt);
-      if (!route) {
-        await client.sendText(msg.chatId, "没有可用 Agent。先用 /addroute 添加路由。").catch(() => {});
-        return;
-      }
+      // No prefix (or unknown prefix) → use current session
+      const session = getSession(msg.chatId);
+      prefix = session.current;
+      body = text;
+    }
+
+    const route = lookupRoute(prefix, rt);
+    if (!route) {
+      await client.sendText(msg.chatId,
+        `会话 ${prefix} 不可用。用 /use /xxx 切换，或 /help 查看可用 Agent。`
+      ).catch(() => {});
+      return;
     }
 
     // Forward to Agent via OB
@@ -440,15 +480,18 @@ async function main() {
         text: body,
         meta: {
           from_wx_user: msg.chatId,
-          route_prefix: prefix || rt.default,
+          route_prefix: prefix,
           agent_name: route.name,
+          is_override: isOverride,
+          session_current: getSession(msg.chatId).current,
           message_id: `wx_${Date.now()}`,
         },
       });
       await ob.send(route.openId, obMsg);
       await ob.destroy();
       log(`[→OB] → ${route.name} (${route.openId.slice(0, 5)}...)`);
-      await client.sendText(msg.chatId, `已转发给 ${route.name}，等待回复...`).catch(() => {});
+      const label = isOverride ? `[→${route.name}] ` : '';
+      await client.sendText(msg.chatId, `${label}已转发，等待回复...`).catch(() => {});
     } catch (e: any) {
       log(`OB send failed: ${e.message}`);
       await client.sendText(msg.chatId, `转发失败: ${e.message}`).catch(() => {});

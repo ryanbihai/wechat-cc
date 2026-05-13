@@ -46804,20 +46804,56 @@ function saveBotObCreds(data) {
   ensureDir();
   fs.writeFileSync(BOT_OB_FILE, JSON.stringify(data, null, 2), "utf-8");
 }
+var sessions = {};
+function getSession(wxUserId) {
+  if (!sessions[wxUserId]) {
+    sessions[wxUserId] = { current: loadRoutes().default || "/cc" };
+  }
+  return sessions[wxUserId];
+}
 function handleSystemCommand(text, wxUserId, rt2) {
   const parts = text.trim().split(/\s+/);
   switch (parts[0]) {
     case "/help": {
       const prefixes = Object.keys(rt2.routes);
-      const list = prefixes.length > 0 ? prefixes.map((p) => `  ${p} \u2192 ${rt2.routes[p].name} (${rt2.routes[p].openId.slice(0, 5)}...)`).join(`
+      const list = prefixes.length > 0 ? prefixes.map((p) => `  ${p} \u2192 ${rt2.routes[p].name}`).join(`
 `) : "  (\u65E0)";
       const def = rt2.default || "(\u672A\u8BBE\u7F6E)";
-      return `\u53EF\u7528 Agent:
+      const session = getSession(wxUserId);
+      return `\u5F53\u524D\u4F1A\u8BDD: ${session.current}
+
+\u53EF\u7528 Agent:
 ${list}
 
 \u9ED8\u8BA4: ${def}
 
-\u7CFB\u7EDF\u547D\u4EE4: /help /routes /addroute /removeroute /default /status`;
+\u547D\u4EE4: /help /use /who /routes /addroute /removeroute /default
+
+\u76F4\u63A5\u53D1\u6D88\u606F \u2192 \u5F53\u524D\u4F1A\u8BDD
+/xxx \u6D88\u606F \u2192 \u4E34\u65F6\u53D1\u7ED9\u6307\u5B9A Agent`;
+    }
+    case "/use": {
+      if (parts.length < 2)
+        return `\u7528\u6CD5: /use /xxx
+\u5F53\u524D\u4F1A\u8BDD: ${getSession(wxUserId).current}`;
+      const prefix = parts[1];
+      if (!prefix.startsWith("/"))
+        return "\u524D\u7F00\u5FC5\u987B\u4EE5 / \u5F00\u5934";
+      if (!rt2.routes[prefix])
+        return `\u8DEF\u7531\u4E0D\u5B58\u5728: ${prefix}\u3002\u53EF\u7528: ${Object.keys(rt2.routes).join(", ") || "(\u65E0)"}`;
+      getSession(wxUserId).current = prefix;
+      return `\u2705 \u5DF2\u5207\u6362\u5230 ${prefix} \u2192 ${rt2.routes[prefix].name}`;
+    }
+    case "/who": {
+      const session = getSession(wxUserId);
+      const route = rt2.routes[session.current];
+      const info = route ? `${session.current} \u2192 ${route.name}` : session.current;
+      const all = Object.keys(rt2.routes).map((p) => p === session.current ? `* ${p} \u2192 ${rt2.routes[p].name}` : `  ${p} \u2192 ${rt2.routes[p].name}`).join(`
+`);
+      return `\u5F53\u524D\u4F1A\u8BDD: ${info}
+
+\u6240\u6709 Agent:
+${all}`;
     }
     case "/routes": {
       const entries = Object.entries(rt2.routes);
@@ -47028,7 +47064,7 @@ async function main() {
   if (ccOpenId && !rt2.routes["/cc"]) {
     rt2.routes["/cc"] = {
       openId: ccOpenId,
-      name: "CC-" + (ccCreds?.agent_id || "local").slice(0, 8),
+      name: "CC-" + (ccCreds?.agent_id || "local").slice(0, 6),
       type: "claude-code",
       addedAt: new Date().toISOString()
     };
@@ -47086,8 +47122,22 @@ ${replyText}`);
     if (s2.userId) {
       saveBinding({ ilinkUserId: s2.userId, defaultRoute: rt2.default, boundAt: new Date().toISOString() });
       log(`bound: ${s2.userId.slice(0, 12)}... \u2192 default ${rt2.default}`);
-      client.sendText(s2.userId, `\u2705 \u5DF2\u7ED1\u5B9A\uFF01\u9ED8\u8BA4 Agent: ${rt2.default}
-` + `\u53D1\u9001 /help \u67E5\u770B\u53EF\u7528\u547D\u4EE4\u548C Agent \u5217\u8868\u3002`).catch(() => {});
+      const routesList = Object.keys(rt2.routes).map((p) => `  ${p} \u2192 ${rt2.routes[p].name}`).join(`
+`);
+      client.sendText(s2.userId, `\uD83C\uDF89 \u6B22\u8FCE\u6765\u5230 OceanBus \u7F51\u5173\uFF01
+
+` + `\u2705 \u5DF2\u81EA\u52A8\u7ED1\u5B9A
+` + `\uD83D\uDCCD \u5F53\u524D\u4F1A\u8BDD: ${rt2.default}
+
+` + `\u53EF\u7528 Agent:
+${routesList || "  (\u6682\u65E0)"}
+
+` + `\u5FEB\u901F\u4E0A\u624B:
+` + `  \u76F4\u63A5\u53D1\u6D88\u606F \u2192 \u53D1\u7ED9\u5F53\u524D\u4F1A\u8BDD
+` + `  /cc \u6D88\u606F \u2192 \u4E34\u65F6\u53D1\u7ED9 /cc
+` + `  /use /xxx \u2192 \u5207\u6362\u9ED8\u8BA4\u4F1A\u8BDD
+` + `  /who \u2192 \u67E5\u770B\u6240\u6709 Agent
+` + `  /help \u2192 \u5B8C\u6574\u547D\u4EE4\u5217\u8868`).catch(() => {});
     }
   });
   client.on("message", async (msg) => {
@@ -47108,26 +47158,21 @@ ${replyText}`);
     }
     let prefix = "";
     let body = text;
+    let isOverride = false;
     const m2 = text.match(/^(\/\S+)\s+(.*)/);
-    if (m2) {
+    if (m2 && rt2.routes[m2[1]]) {
       prefix = m2[1];
       body = m2[2];
-    }
-    let route = null;
-    if (prefix) {
-      route = lookupRoute(prefix, rt2);
-      if (!route) {
-        await client.sendText(msg.chatId, `\u672A\u77E5\u524D\u7F00: ${prefix}
-\u53EF\u7528: ${Object.keys(rt2.routes).join(", ") || "(\u65E0)"}
-\u9ED8\u8BA4: ${rt2.default}`).catch(() => {});
-        return;
-      }
+      isOverride = true;
     } else {
-      route = lookupRoute(rt2.default, rt2);
-      if (!route) {
-        await client.sendText(msg.chatId, "\u6CA1\u6709\u53EF\u7528 Agent\u3002\u5148\u7528 /addroute \u6DFB\u52A0\u8DEF\u7531\u3002").catch(() => {});
-        return;
-      }
+      const session = getSession(msg.chatId);
+      prefix = session.current;
+      body = text;
+    }
+    const route = lookupRoute(prefix, rt2);
+    if (!route) {
+      await client.sendText(msg.chatId, `\u4F1A\u8BDD ${prefix} \u4E0D\u53EF\u7528\u3002\u7528 /use /xxx \u5207\u6362\uFF0C\u6216 /help \u67E5\u770B\u53EF\u7528 Agent\u3002`).catch(() => {});
+      return;
     }
     if (!botOpenId || !botObCreds) {
       await client.sendText(msg.chatId, "\u7F51\u5173 OB \u672A\u5C31\u7EEA\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002").catch(() => {});
@@ -47144,15 +47189,18 @@ ${replyText}`);
         text: body,
         meta: {
           from_wx_user: msg.chatId,
-          route_prefix: prefix || rt2.default,
+          route_prefix: prefix,
           agent_name: route.name,
+          is_override: isOverride,
+          session_current: getSession(msg.chatId).current,
           message_id: `wx_${Date.now()}`
         }
       });
       await ob.send(route.openId, obMsg);
       await ob.destroy();
       log(`[\u2192OB] \u2192 ${route.name} (${route.openId.slice(0, 5)}...)`);
-      await client.sendText(msg.chatId, `\u5DF2\u8F6C\u53D1\u7ED9 ${route.name}\uFF0C\u7B49\u5F85\u56DE\u590D...`).catch(() => {});
+      const label = isOverride ? `[\u2192${route.name}] ` : "";
+      await client.sendText(msg.chatId, `${label}\u5DF2\u8F6C\u53D1\uFF0C\u7B49\u5F85\u56DE\u590D...`).catch(() => {});
     } catch (e) {
       log(`OB send failed: ${e.message}`);
       await client.sendText(msg.chatId, `\u8F6C\u53D1\u5931\u8D25: ${e.message}`).catch(() => {});
