@@ -257,7 +257,8 @@ function createMcpServer(client: WeixinBotClient, getState: () => {
         }
         client.stopTyping(args.chat_id);
         try {
-          await client.sendText(args.chat_id, args.text);
+          const prefix = args.text.startsWith('🔔') ? '' : '🔔 Claude Code：\n';
+          await client.sendText(args.chat_id, prefix + args.text);
           return { content: [{ type: "text" as const, text: "已发送" }] };
         } catch (e: any) {
           return { content: [{ type: "text" as const, text: `发送失败: ${String(e)}` }] };

@@ -46986,7 +46986,9 @@ function createMcpServer(client, getState) {
         }
         client.stopTyping(args.chat_id);
         try {
-          await client.sendText(args.chat_id, args.text);
+          const prefix = args.text.startsWith("\uD83D\uDD14") ? "" : `\uD83D\uDD14 Claude Code\uFF1A
+`;
+          await client.sendText(args.chat_id, prefix + args.text);
           return { content: [{ type: "text", text: "\u5DF2\u53D1\u9001" }] };
         } catch (e) {
           return { content: [{ type: "text", text: `\u53D1\u9001\u5931\u8D25: ${String(e)}` }] };
