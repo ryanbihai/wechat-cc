@@ -1,6 +1,6 @@
 {
   "name": "wechat-cc",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "WeChat Channel for Claude Code — 微信扫码操控 CC",
   "author": "OceanBus",
   "license": "MIT",
