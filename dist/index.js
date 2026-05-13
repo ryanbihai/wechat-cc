@@ -47143,13 +47143,18 @@ async function main() {
         try {
           parsed = JSON.parse(content);
         } catch (_2) {
-          parsed = { action: "reply", text: content };
+          parsed = null;
         }
-        const meta3 = parsed.meta || {};
-        const toWxUser = meta3.to_wx_user || "";
+        let toWxUser = parsed?.meta?.to_wx_user || "";
+        let replyText = parsed?.text || "";
+        let agentName = parsed?.meta?.agent_name || "Agent";
+        if (!toWxUser) {
+          replyText = content.replace(/^from .+\nto .+\n/m, "").trim();
+          agentName = "CC";
+          const b2 = loadBinding();
+          toWxUser = b2?.ilinkUserId || "";
+        }
         if (toWxUser) {
-          const replyText = parsed.text || content;
-          const agentName = meta3.agent_name || "Agent";
           log(`[\u2190OB] Agent \u2192 WeChat ${toWxUser.slice(0, 12)}...`);
           try {
             await client.sendText(toWxUser, `\uD83D\uDD14 ${agentName} \u56DE\u590D\uFF1A

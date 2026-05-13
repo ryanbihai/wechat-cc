@@ -411,14 +411,22 @@ async function main() {
         if (msg.from_openid === botOpenId) return;
         const content: string = msg.content || "";
         let parsed: any;
-        try { parsed = JSON.parse(content); } catch (_) { parsed = { action: "reply", text: content }; }
+        try { parsed = JSON.parse(content); } catch (_) { parsed = null; }
 
-        const meta = parsed.meta || {};
-        const toWxUser = meta.to_wx_user || "";
+        // JSON format
+        let toWxUser = parsed?.meta?.to_wx_user || "";
+        let replyText = parsed?.text || "";
+        let agentName = parsed?.meta?.agent_name || "Agent";
+
+        // Old format (plain text w/ routing headers): fallback to binding
+        if (!toWxUser) {
+          replyText = content.replace(/^from .+\nto .+\n/m, '').trim();
+          agentName = "CC";
+          const b = loadBinding();
+          toWxUser = b?.ilinkUserId || "";
+        }
 
         if (toWxUser) {
-          const replyText = parsed.text || content;
-          const agentName = meta.agent_name || "Agent";
           log(`[←OB] Agent → WeChat ${toWxUser.slice(0, 12)}...`);
           try {
             await client.sendText(toWxUser, `🔔 ${agentName} 回复：\n\n${replyText}`);
