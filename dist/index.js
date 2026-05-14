@@ -38503,20 +38503,28 @@ ${replyText}`);
         if (action === "announce") {
           const agentName2 = meta2.agent_name || "Agent-" + msg.from_openid.slice(0, 4);
           const agentOpenId = meta2.agent_openid || msg.from_openid;
-          const prefix = "/" + agentName2.toLowerCase().replace(/\s+/g, "-");
+          let routeName = agentName2;
+          let prefix = "/" + routeName.toLowerCase().replace(/\s+/g, "-");
           rt2 = loadRoutes();
+          if (rt2.routes[prefix] && rt2.routes[prefix].openId !== agentOpenId) {
+            let suffix = 2;
+            while (rt2.routes[prefix + "-" + suffix])
+              suffix++;
+            routeName = agentName2 + "-" + suffix;
+            prefix = prefix + "-" + suffix;
+          }
           const isNew = !rt2.routes[prefix];
           if (isNew) {
-            rt2.routes[prefix] = { openId: agentOpenId, name: agentName2, type: meta2.agent_type || "agent", addedAt: new Date().toISOString() };
+            rt2.routes[prefix] = { openId: agentOpenId, name: routeName, type: meta2.agent_type || "agent", addedAt: new Date().toISOString() };
             if (!rt2.default)
               rt2.default = prefix;
             saveRoutes(rt2);
-            log(`[announce] auto-added route: ${prefix} \u2192 ${agentName2}`);
+            log(`[announce] auto-added route: ${prefix} \u2192 ${routeName}`);
           } else {
             rt2.routes[prefix].openId = agentOpenId;
-            rt2.routes[prefix].name = agentName2;
+            rt2.routes[prefix].name = routeName;
             saveRoutes(rt2);
-            log(`[announce] updated route: ${prefix} \u2192 ${agentName2}`);
+            log(`[announce] updated route: ${prefix} \u2192 ${routeName}`);
           }
           const binding2 = loadBinding();
           if (binding2?.ilinkUserId) {
@@ -38580,9 +38588,24 @@ ${routesList || "  (\u6682\u65E0)"}
 ` + `\uD83D\uDCA1 \u8BA9 Agent \u7BA1\u7406\u5458\u628A\u4F60\u7684 wxOpenId \u53D1\u7ED9 Agent\uFF0CAgent \u542F\u52A8\u65F6\u81EA\u52A8\u8FDE\u63A5\uFF0C\u4E0D\u9700\u8981\u626B\u7801\u3002`).catch(() => {});
     }
   });
+  const _recentFingerprints = new Set;
+  function _isDuplicate(chatId, text) {
+    const fp = `${chatId}:${text}`;
+    if (_recentFingerprints.has(fp))
+      return true;
+    _recentFingerprints.add(fp);
+    if (_recentFingerprints.size > 200) {
+      const arr = Array.from(_recentFingerprints).slice(0, 100);
+      for (const fp2 of arr)
+        _recentFingerprints.delete(fp2);
+    }
+    return false;
+  }
   client.on("message", async (msg) => {
     const text = (msg.text || "").trim();
     if (!text)
+      return;
+    if (_isDuplicate(msg.chatId || "", text))
       return;
     log(`[\u5FAE\u4FE1] ${msg.chatId.slice(0, 12)}...: ${text.slice(0, 80)}`);
     client.startTyping(msg.chatId);

@@ -582,8 +582,8 @@ async function main() {
     if (_recentFingerprints.has(fp)) return true;
     _recentFingerprints.add(fp);
     if (_recentFingerprints.size > 200) {
-      const it = _recentFingerprints.values();
-      for (let i = 0; i < 100; i++) _recentFingerprints.delete(it.next().value);
+      const arr = Array.from(_recentFingerprints).slice(0, 100);
+      for (const fp of arr) _recentFingerprints.delete(fp);
     }
     return false;
   }
@@ -592,7 +592,7 @@ async function main() {
     const text = (msg.text || "").trim();
     if (!text) return;
 
-    if (_isDuplicate(msg.chatId, text)) return;
+    if (_isDuplicate(msg.chatId || "", text)) return;
     log(`[微信] ${msg.chatId.slice(0, 12)}...: ${text.slice(0, 80)}`);
 
     // Start typing indicator (matches reference plugin behavior)
