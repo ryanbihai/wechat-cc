@@ -20,8 +20,6 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { WeixinBotClient } from "weixin-bot-plugin";
 import type { InboundMessage } from "weixin-bot-plugin";
-import { z } from "zod";
-
 // ── Logging ───────────────────────────────────────────────────
 function log(msg: string): void {
   process.stderr.write(`[wechat-cc] ${msg}\n`);
@@ -153,14 +151,17 @@ function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): st
     }
     case "/who": {
       const session = getSession(wxUserId);
-      const route = rt.routes[session.current];
-      const info = route ? `${session.current} → ${route.name}` : session.current;
-      const all = Object.keys(rt.routes).map(p =>
-        p === session.current ? `* ${p} → ${rt.routes[p].name}` : `  ${p} → ${rt.routes[p].name}`
-      ).join("\n");
-      const wxId = loadWxIdentity();
-      const wxLine = wxId?.openid ? `\n📱 你的微信 OB: ${wxId.openid.slice(0, 5)}... (发给agent管理员即可连接)` : '';
-      return `当前会话: ${info}\n\n所有 Agent:\n${all}${wxLine}`;
+      const prefixes = Object.keys(rt.routes);
+      const def = prefixes.find(p => p === session.current) || rt.default || prefixes[0] || "";
+      const others = prefixes.filter(p => p !== def);
+      const defLine = `默认Agent：${def || "(无)"}`;
+      const otherLines = others.length > 0
+        ? `\n可用Agent：\n${others.join("\n")}`
+        : "";
+      const hint = prefixes.length > 1
+        ? `\n\n不加前缀，与默认Agent会话；加上/<agent-name>，可以与指定的Agent会话`
+        : "";
+      return `${defLine}${otherLines}${hint}`;
     }
     case "/routes": {
       const entries = Object.entries(rt.routes);
@@ -206,21 +207,13 @@ function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): st
 }
 
 // ── MCP Server ─────────────────────────────────────────────────
-function createMcpServer(client: WeixinBotClient, getState: () => {
-  rt: RouteTable; binding: Binding | null; ccOpenId: string; botOpenId: string;
-}) {
-  const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)(?:\s+([a-km-z]{5}))?\s*$/i;
-  let pendingPermissionRequestId: string | undefined;
-
+function createMcpServer(client: WeixinBotClient) {
   const server = new Server(
-    { name: "wechat", version: "0.2.0" },
+    { name: "wechat", version: "0.4.0" },
     {
-      capabilities: {
-        experimental: { "claude/channel": {}, "claude/channel/permission": {} },
-        tools: {},
-      },
+      capabilities: { tools: {} },
       instructions:
-        '微信消息通过 OB L0 投递到 Agent。用 reply 工具回复微信消息，传入 chat_id。',
+        '微信消息通过 OB L0 + Monitor 投递到 Agent。用 reply 回复微信消息（需 chat_id，可选 name 区分多窗口），用 send 主动发消息。用 login 扫码登录，用 status 查看状态。说"启动微信"开始监听。多窗口：每个窗口启动 agent.js 时用 --name 指定唯一名，微信端 /<name> 发给指定窗口，/use /<name> 切换默认窗口。',
     },
   );
 
@@ -228,14 +221,28 @@ function createMcpServer(client: WeixinBotClient, getState: () => {
     tools: [
       {
         name: "reply",
-        description: "回复微信消息",
+        description: "回复微信消息，自动带上窗口名前缀（如 🔔CC-Win1：）方便微信用户区分来源",
         inputSchema: {
           type: "object" as const,
           properties: {
             chat_id: { type: "string", description: "目标用户 ID（微信消息 meta 中的 from_wx_user）" },
             text: { type: "string", description: "回复文本内容" },
+            name: { type: "string", description: "窗口名（可选，用于 🔔<name>： 前缀，不传默认 Claude Code）" },
           },
           required: ["chat_id", "text"],
+        },
+      },
+      {
+        name: "send",
+        description: "发送微信消息，自动带上窗口名前缀。chat_id 可选，不传则自动发给已绑定用户",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            chat_id: { type: "string", description: "目标用户 ID（可选，不传则发给已绑定用户）" },
+            text: { type: "string", description: "发送的文本内容" },
+            name: { type: "string", description: "窗口名（可选，用于 🔔<name>： 前缀，不传默认 Claude Code）" },
+          },
+          required: ["text"],
         },
       },
       {
@@ -267,8 +274,26 @@ function createMcpServer(client: WeixinBotClient, getState: () => {
         }
         client.stopTyping(args.chat_id);
         try {
-          const prefix = args.text.startsWith('🔔') ? '' : '🔔 Claude Code：\n';
+          const sender = args.name || "Claude Code";
+          const prefix = args.text.startsWith('🔔') ? '' : `🔔${sender}：\n`;
           await client.sendText(args.chat_id, prefix + args.text);
+          return { content: [{ type: "text" as const, text: "已发送" }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: `发送失败: ${String(e)}` }] };
+        }
+      }
+      case "send": {
+        if (!args.text) {
+          return { content: [{ type: "text" as const, text: "缺少 text 参数" }] };
+        }
+        const chatId = args.chat_id || loadBinding()?.ilinkUserId;
+        if (!chatId) {
+          return { content: [{ type: "text" as const, text: "无绑定用户且未指定 chat_id。请先扫码登录绑定。" }] };
+        }
+        try {
+          const sender = args.name || "Claude Code";
+          const prefix = args.text.startsWith('🔔') ? '' : `🔔${sender}：\n`;
+          await client.sendText(chatId, prefix + args.text);
           return { content: [{ type: "text" as const, text: "已发送" }] };
         } catch (e: any) {
           return { content: [{ type: "text" as const, text: `发送失败: ${String(e)}` }] };
@@ -286,17 +311,27 @@ function createMcpServer(client: WeixinBotClient, getState: () => {
       }
       case "status": {
         const s = client.getStatus();
-        const st = getState();
+        const rt = loadRoutes();
+        let binding = loadBinding();
+        // Auto-recover binding if missing but iLink is connected
+        const wxId = loadWxIdentity();
+        if (!binding && s.connected && s.userId && wxId?.openid) {
+          saveBinding({ ilinkUserId: s.userId, wxOpenId: wxId.openid, defaultRoute: rt.default, boundAt: new Date().toISOString() });
+          binding = loadBinding();
+          log(`auto-recovered binding via status: ${s.userId.slice(0, 12)}...`);
+        }
+        const ccCreds = loadCcObCreds();
+        const botOb = loadBotObCreds();
         return { content: [{
           type: "text" as const,
           text: JSON.stringify({
             wechat_connected: s.connected,
             wechat_user: s.userId || "(未登录)",
-            gateway_ob: st.botOpenId ? st.botOpenId.slice(0, 5) + "..." : "(未注册)",
-            cc_ob: st.ccOpenId ? st.ccOpenId.slice(0, 5) + "..." : "(未注册)",
-            bound: !!st.binding,
-            default_route: st.rt.default,
-            routes: Object.keys(st.rt.routes).length,
+            gateway_ob: botOb?.openid ? botOb.openid.slice(0, 5) + "..." : "(未注册)",
+            cc_ob: ccCreds?.openid ? ccCreds.openid.slice(0, 5) + "..." : "(未注册)",
+            bound: !!binding,
+            default_route: rt.default,
+            routes: Object.keys(rt.routes).length,
           }),
         }] };
       }
@@ -312,36 +347,12 @@ function createMcpServer(client: WeixinBotClient, getState: () => {
     }
   });
 
-  // Permission forwarding
-  server.setNotificationHandler(
-    z.object({
-      method: z.literal("notifications/claude/channel/permission_request"),
-      params: z.object({
-        request_id: z.string(), tool_name: z.string(),
-        description: z.string(), input_preview: z.string(),
-      }),
-    }),
-    async ({ params }) => {
-      const s = client.getStatus();
-      if (!s.userId) return;
-      try {
-        await client.sendText(s.userId,
-          `Claude 请求执行 ${params.tool_name}:\n${params.description}\n` +
-          (params.input_preview ? `输入: ${params.input_preview}\n` : "") +
-          `\n回复 yes / no`,
-          { raw: true }
-        );
-        pendingPermissionRequestId = params.request_id;
-      } catch (e) { log(`perm forward failed: ${String(e)}`); }
-    }
-  );
-
-  return server;
+  return { server };
 }
 
 // ── Main ──────────────────────────────────────────────────────
 async function main() {
-  log("wechat-cc v0.2.0 gateway starting...");
+  log("wechat-cc v0.4.0 gateway starting...");
 
   // 1. Load state
   let rt = loadRoutes();
@@ -410,15 +421,23 @@ async function main() {
 
   // 5. OB listener: receives Agent replies → WeChat
   let obListener: any = null;
-  if (botOpenId && botObCreds) {
+  let currentBotOpenId = botOpenId;
+  if (botObCreds) {
     try {
       const oceanbus = await import("oceanbus");
       obListener = await oceanbus.createOceanBus({
         keyStore: { type: "memory" },
-        identity: { agent_id: botObCreds.agent_id, api_key: botObCreds.api_key, openid: botOpenId },
+        identity: { agent_id: botObCreds.agent_id, api_key: botObCreds.api_key, openid: botObCreds.openid },
       });
+      const freshBotOpenId = await obListener.getAddress();
+      if (freshBotOpenId !== botOpenId) {
+        botObCreds.openid = freshBotOpenId;
+        saveBotObCreds(botObCreds);
+        currentBotOpenId = freshBotOpenId;
+        log(`Bot OpenID refreshed`);
+      }
       obListener.startListening(async (msg: any) => {
-        if (msg.from_openid === botOpenId) return;
+        if (msg.from_openid === currentBotOpenId) return;
         const content: string = msg.content || "";
         let parsed: any;
         try { parsed = JSON.parse(content); } catch (_) { parsed = null; }
@@ -448,15 +467,23 @@ async function main() {
   }
 
   // 5b. OB listener for wxOpenId: receives Agent announces + replies sent to WeChat user
-  if (wxOpenId && wxIdentity) {
+  let currentWxOpenId = wxOpenId;
+  if (wxIdentity) {
     try {
       const oceanbus = await import("oceanbus");
       const obWx = await oceanbus.createOceanBus({
         keyStore: { type: "memory" },
-        identity: { agent_id: wxIdentity.agent_id, api_key: wxIdentity.api_key, openid: wxOpenId },
+        identity: { agent_id: wxIdentity.agent_id, api_key: wxIdentity.api_key, openid: wxIdentity.openid },
       });
+      const freshWxOpenId = await obWx.getAddress();
+      if (freshWxOpenId !== wxOpenId) {
+        wxIdentity.openid = freshWxOpenId;
+        saveWxIdentity(wxIdentity);
+        currentWxOpenId = freshWxOpenId;
+        log(`WX OpenID refreshed`);
+      }
       obWx.startListening(async (msg: any) => {
-        if (msg.from_openid === wxOpenId) return;
+        if (msg.from_openid === currentWxOpenId) return;
         const content: string = msg.content || "";
         let parsed: any;
         try { parsed = JSON.parse(content); } catch (_) { parsed = { action: "reply", text: content }; }
@@ -470,15 +497,31 @@ async function main() {
           const agentOpenId = meta.agent_openid || msg.from_openid;
           const prefix = "/" + agentName.toLowerCase().replace(/\s+/g, '-');
           rt = loadRoutes();
-          if (!rt.routes[prefix]) {
+          const isNew = !rt.routes[prefix];
+          if (isNew) {
             rt.routes[prefix] = { openId: agentOpenId, name: agentName, type: meta.agent_type || "agent", addedAt: new Date().toISOString() };
             if (!rt.default) rt.default = prefix;
             saveRoutes(rt);
             log(`[announce] auto-added route: ${prefix} → ${agentName}`);
-            const binding = loadBinding();
-            if (binding?.ilinkUserId) {
-              client.sendText(binding.ilinkUserId, `🔔 ${agentName} 已连接！/use ${prefix} 切换为主Agent`).catch(() => {});
-            }
+          } else {
+            // Agent re-connected → update OpenID (may have changed)
+            rt.routes[prefix].openId = agentOpenId;
+            rt.routes[prefix].name = agentName;
+            saveRoutes(rt);
+            log(`[announce] updated route: ${prefix} → ${agentName}`);
+          }
+          const binding = loadBinding();
+          if (binding?.ilinkUserId) {
+            const currentDefault = rt.default || "(无)";
+            const switchHint = currentDefault === prefix
+              ? `已自动设为你的默认会话。直接发消息给我即可。`
+              : `发 /use ${prefix} 切换为默认会话，或发 ${prefix} 消息 临时对话。\n当前默认: ${currentDefault}`;
+            const msg = isNew
+              ? `🔔 ${agentName} 已连接！\n\n${switchHint}`
+              : `🔄 ${agentName} 已重新连接。\n\n${switchHint}`;
+            client.sendText(binding.ilinkUserId, msg).catch((e) => {
+              log(`announce notify failed: ${e.message}`);
+            });
           }
           return;
         }
@@ -529,6 +572,9 @@ async function main() {
     if (!text) return;
     log(`[微信] ${msg.chatId.slice(0, 12)}...: ${text.slice(0, 80)}`);
 
+    // Start typing indicator (matches reference plugin behavior)
+    client.startTyping(msg.chatId);
+
     // Reload routes (may have been updated)
     rt = loadRoutes();
 
@@ -539,8 +585,16 @@ async function main() {
       return;
     }
 
-    // Check binding
-    const binding = loadBinding();
+    // Check binding — auto-recover if possible
+    let binding = loadBinding();
+    if (!binding) {
+      const s = client.getStatus();
+      if (s.userId && wxOpenId) {
+        saveBinding({ ilinkUserId: s.userId, wxOpenId, defaultRoute: rt.default, boundAt: new Date().toISOString() });
+        binding = loadBinding();
+        log(`auto-recovered binding: ${s.userId.slice(0, 12)}... → ${rt.default}`);
+      }
+    }
     if (!binding) {
       await client.sendText(msg.chatId, "请先扫码绑定。发送 /help 查看说明。").catch(() => {});
       return;
@@ -574,18 +628,14 @@ async function main() {
       return;
     }
 
-    // Forward to Agent via OB
-    if (!botOpenId || !botObCreds) {
+    // Forward to Agent via OB — primary delivery path.
+    // CC receives messages via Monitor watching agent.ts stdout.
+    if (!obListener && !botObCreds) {
       await client.sendText(msg.chatId, "网关 OB 未就绪，请稍后重试。").catch(() => {});
       return;
     }
 
     try {
-      const oceanbus = await import("oceanbus");
-      const ob = await oceanbus.createOceanBus({
-        keyStore: { type: "memory" },
-        identity: { agent_id: botObCreds.agent_id, api_key: botObCreds.api_key, openid: botOpenId },
-      });
       const obMsg = JSON.stringify({
         action: "command",
         text: body,
@@ -598,11 +648,19 @@ async function main() {
           message_id: `wx_${Date.now()}`,
         },
       });
-      await ob.send(route.openId, obMsg);
-      await ob.destroy();
+      // Reuse persistent OB listener for sending; fallback to temp instance
+      if (obListener) {
+        await obListener.send(route.openId, obMsg);
+      } else {
+        const oceanbus = await import("oceanbus");
+        const ob = await oceanbus.createOceanBus({
+          keyStore: { type: "memory" },
+          identity: { agent_id: botObCreds!.agent_id, api_key: botObCreds!.api_key, openid: botObCreds!.openid },
+        });
+        await ob.send(route.openId, obMsg);
+        await ob.destroy();
+      }
       log(`[→OB] → ${route.name} (${route.openId.slice(0, 5)}...)`);
-      const label = isOverride ? `[→${route.name}] ` : '';
-      await client.sendText(msg.chatId, `${label}已转发，等待回复...`).catch(() => {});
     } catch (e: any) {
       log(`OB send failed: ${e.message}`);
       await client.sendText(msg.chatId, `转发失败: ${e.message}`).catch(() => {});
@@ -610,20 +668,21 @@ async function main() {
   });
 
   client.on("sessionExpired", async () => {
-    log("session expired");
+    log("session expired — user should re-login via MCP login tool");
   });
 
   client.on("qrRefresh", async ({ qrcodeUrl, qrAscii }) => {
     log(`QR refreshed: ${qrcodeUrl}`);
+    log("QR code refreshed — user should re-scan via MCP login tool");
   });
 
   client.on("error", (err: unknown) => log(`client error: ${String(err)}`));
 
   // 7. MCP server
-  const server = createMcpServer(client, () => ({ rt, binding: loadBinding(), ccOpenId, botOpenId }));
+  const { server: mcpServer } = createMcpServer(client);
   const transport = new StdioServerTransport();
-  await server.connect(transport);
-  log("MCP connected (login/status/logout tools only)");
+  await mcpServer.connect(transport);
+  log("MCP connected (login/status/logout/send/reply)");
 
   // 8. Start Bot
   let shuttingDown = false;
@@ -634,9 +693,13 @@ async function main() {
   process.on("SIGTERM", shutdown);
 
   const accounts = client.listAccounts();
-  const launched = accounts.length > 0 && (await client.start(accounts[0]));
+  let launched = false;
+  for (const acct of accounts) {
+    log(`trying account ${acct.slice(0, 8)}...`);
+    if (await client.start(acct)) { launched = true; break; }
+  }
   if (!launched) {
-    log("no accounts, will prompt login via MCP status");
+    log("no valid accounts, will prompt login via MCP status");
   } else {
     log(`gateway ready — ${Object.keys(rt.routes).length} routes, default: ${rt.default || "(none)"}`);
   }

@@ -3,13 +3,16 @@
  * CC Agent — OB message handler for WeChat Gateway
  *
  * Receives structured OB commands from wechat-cc Gateway,
- * executes them via claude spawn, and replies via OB.
+ * auto-executes via claude spawn, and replies via OB.
  *
  * 用法:
- *   node cc-agent.cjs                    # 启动监听（默认 data-dir）
- *   node cc-agent.cjs --auto-exec        # 自动执行模式（spawn claude）
- *   node cc-agent.cjs --data-dir <dir>   # 指定 OB 身份目录
- *   node cc-agent.cjs --gateway <openid> # 指定网关 OB OpenID
+ *   node cc-agent.cjs                  # 启动（自动检测 Gateway 配置）
+ *   node cc-agent.cjs --name <name>    # 指定窗口名
+ *   node cc-agent.cjs --no-auto-exec   # 禁用自动执行（只显示消息）
+ *   node cc-agent.cjs --no-announce    # 不向 Gateway 发送 announce
+ *   node cc-agent.cjs --wx <openid>    # 手动指定微信 OB OpenID
+ *   node cc-agent.cjs --gateway <id>   # 手动指定 Gateway OB OpenID
+ *   node cc-agent.cjs --data-dir <dir> # 指定 OB 身份目录
  */
 
 const { createOceanBus, RosterService } = require('oceanbus');
@@ -24,11 +27,22 @@ function getArg(name) {
   return (idx >= 0 && idx + 1 < process.argv.length) ? process.argv[idx + 1] : null;
 }
 
-const DATA_DIR = getArg('--data-dir') || path.join(process.cwd(), '.cc-data-' + process.pid);
+// Auto-detect Gateway config from wechat-cc state files
+const GW_STATE_DIR = path.join(os.homedir(), '.claude', 'channels', 'wechat-cc');
+function loadGW(file) {
+  try { return JSON.parse(fs.readFileSync(path.join(GW_STATE_DIR, file), 'utf-8')); } catch (_) { return null; }
+}
+const gwWxIdentity = loadGW('wx-identity.json');
+const gwBotOb = loadGW('bot-ob.json');
+const gwBinding = loadGW('binding.json');
+
+const DATA_DIR = getArg('--data-dir') || path.join(__dirname, '.cc-data');
 const CRED_FILE = path.join(DATA_DIR, 'credentials.json');
-const AUTO_EXEC = process.argv.includes('--auto-exec');
-const WX_OPENID = getArg('--wx');       // 微信 OB OpenID，用于 announce
-const GATEWAY_OPENID = getArg('--gateway') || WX_OPENID;  // 回复目标
+const CURSOR_FILE = path.join(DATA_DIR, 'seq_cursor.json');
+const AUTO_EXEC = !process.argv.includes('--no-auto-exec');
+const NO_ANNOUNCE = process.argv.includes('--no-announce');
+const WX_OPENID = getArg('--wx') || (gwWxIdentity?.openid || null);
+const GATEWAY_OPENID = getArg('--gateway') || (gwBotOb?.openid || WX_OPENID);
 
 // ── Main ──────────────────────────────────────────────────────
 async function main() {
@@ -60,39 +74,53 @@ async function main() {
   // Auto-name: --name flag > OpenID前4位
   const agentName = getArg('--name') || ('CC-' + creds.openid.slice(0, 4));
 
+  const mode = AUTO_EXEC ? 'auto-exec' : 'display only';
+  const wxIdDisplay = WX_OPENID ? WX_OPENID.slice(0, 4) : '(未检测到)';
+  const agentIdDisplay = creds.openid.slice(0, 4);
   console.log('');
   console.log('╔══════════════════════════════════════╗');
-  console.log('║  你的窗口名: ' + agentName.padEnd(24) + '║');
-  console.log('║  OpenID:    ' + creds.openid.slice(0,5).padEnd(24) + '║');
+  console.log('║  窗口名:   ' + agentName.padEnd(24) + '║');
+  console.log('║  本Agent:  ' + agentIdDisplay.padEnd(24) + '║');
+  console.log('║  微信OB:   ' + wxIdDisplay.padEnd(24) + '║');
+  console.log('║  模式:     ' + mode.padEnd(24) + '║');
   console.log('╚══════════════════════════════════════╝');
   console.log('');
 
   // Announce to Gateway if wxOpenId provided
-  if (WX_OPENID) {
+  if (WX_OPENID && !NO_ANNOUNCE) {
     try {
       const obAnn = await createOceanBus({
         keyStore: { type: 'memory' },
         identity: { agent_id: creds.agent_id, api_key: creds.api_key, openid: creds.openid },
+        mailbox: { cursorFilePath: CURSOR_FILE },
       });
       await obAnn.send(WX_OPENID, JSON.stringify({
         action: 'announce',
         meta: { agent_name: agentName, agent_openid: creds.openid, agent_type: 'claude-code' },
       }));
       await obAnn.destroy();
-      console.log('📡 已向微信 Gateway 发送 announce');
-      console.log('   窗口名: ' + agentName);
-      console.log('   微信端: /' + agentName.toLowerCase().replace(/\s+/g, '-') + ' 消息 → 发给这个窗口');
+      const prefix = '/' + agentName.toLowerCase().replace(/\s+/g, '-');
+      console.log('📡 已向微信 Gateway 发送 announce (OpenID: ' + creds.openid.slice(0,4) + '...)');
+      console.log('   微信用户会收到连接通知（含使用说明）');
+      console.log('   微信端发 ' + prefix + ' 消息 → 本窗口自动执行并回复');
       console.log('');
     } catch (e) {
       console.log('⚠️  announce 失败: ' + e.message);
+      console.log('   Gateway 未运行？用 --no-announce 跳过');
       console.log('');
     }
+  } else if (!WX_OPENID) {
+    console.log('⚠️  未检测到微信 OB OpenID，跳过 announce');
+    console.log('   手动指定: --wx <openid>');
+    console.log('   或确保 ~/.claude/channels/wechat-cc/wx-identity.json 存在');
+    console.log('');
   }
 
-  // 2. Connect OB
+  // 2. Connect OB (use stable stored OpenID + dedicated cursor file)
   const ob = await createOceanBus({
     keyStore: { type: 'memory' },
     identity: { agent_id: creds.agent_id, api_key: creds.api_key, openid: creds.openid },
+    mailbox: { cursorFilePath: CURSOR_FILE },
   });
 
   const roster = new RosterService();
@@ -194,6 +222,28 @@ async function main() {
       }
     }
   });
+
+  // 4. Send hello to WeChat via Gateway
+  const ilinkUser = gwBinding?.ilinkUserId || '';
+  if (GATEWAY_OPENID && ilinkUser) {
+    try {
+      const prefix = '/' + agentName.toLowerCase().replace(/\s+/g, '-');
+      const hello = JSON.stringify({
+        action: 'reply',
+        text: `🔔${agentName}：我上线了，请用 ${prefix} 给我发消息`,
+        meta: {
+          to_wx_user: ilinkUser,
+          agent_name: agentName,
+        },
+      });
+      await ob.send(GATEWAY_OPENID, hello);
+      console.log('👋 已向微信发送上线通知');
+      console.log('');
+    } catch (e) {
+      console.log('⚠️  上线通知发送失败: ' + e.message);
+      console.log('');
+    }
+  }
 
   // Keep alive
   await new Promise(() => {});

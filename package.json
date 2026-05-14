@@ -1,11 +1,11 @@
 {
   "name": "wechat-cc",
-  "version": "0.1.0",
-  "description": "WeChat Channel for Claude Code via OceanBus L0 P2P",
+  "version": "0.5.0",
+  "description": "WeChat Channel for Claude Code via OceanBus L0 P2P — OB + Monitor, no --channels",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "bun build src/index.ts --outfile dist/index.js --target bun",
+    "build": "bun build src/index.ts --outfile dist/index.js --target bun && bun build src/agent.ts --outfile dist/agent.js --target node",
     "start": "bun install --no-summary && bun dist/index.js",
     "typecheck": "tsc --noEmit",
     "dev": "tsc --watch"

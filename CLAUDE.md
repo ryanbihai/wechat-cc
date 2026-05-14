@@ -1,49 +1,55 @@
 # wechat-cc
 
-WeChat Channel for Claude Code — MCP Channel adapter over OceanBus L0.
+WeChat Channel for Claude Code — OB Gateway + Agent over OceanBus L0.
 
 ## Commands
 
 ```bash
-bun run build      # Bun build → dist/index.js (single file)
-bun run start      # Start MCP server
+bun run build      # Build: dist/index.js (gateway) + dist/agent.js (CC listener)
+bun run start      # Start MCP server (gateway)
 bun run typecheck  # tsc --noEmit
-bun run dev        # tsc --watch
 ```
 
 ## Architecture
 
 ```
-src/index.ts  — Entry point: WeixinBotClient + MCP Server + OB L0
-                All logic in one file (~280 lines).
+src/index.ts  — Gateway: WeixinBotClient + MCP Server + OB L0 routing
+src/agent.ts  — CC Agent: OB listener → stdout JSON → Monitor → CC session
 
 Dependencies:
   weixin-bot-plugin     — iLink API (QR login, long-poll, send/recv)
-  @modelcontextprotocol/sdk — MCP Channel protocol (stdio server)
+  @modelcontextprotocol/sdk — MCP stdio server (tools only, no channels)
   oceanbus              — L0 P2P identity and messaging
 ```
 
 ## Key Design Decisions
 
+- **OB + Monitor, no MCP channels**: Messages route through OB L0 to agent.js,
+  which prints JSON to stdout. CC Monitor captures stdout and pushes events
+  into the conversation. No `--channels` flag required.
 - **Auto-bind on QR scan**: When `loginSuccess` fires, `ilink_user_id` is
-  automatically paired with CC's OpenID. No manual pair command needed.
-- **Dual message path**: WeChat messages go to CC via both MCP notification
-  (real-time) and OB L0 (store-and-forward). OB L0 delivery can fail silently.
-- **Permission forwarding**: `PERMISSION_REPLY_RE` intercepts yes/no replies
-  from WeChat and forwards them as `claude/channel/permission` notifications.
-- **OB L0 is secondary**: The primary path is direct MCP notification.
-  OB L0 exists for offline queuing and future multi-agent scenarios.
+  automatically paired. No manual pair command needed.
+- **Gateway routes only**: Gateway does NOT process commands. It parses
+  route prefixes, looks up OpenIDs, and forwards via OB.
+- **Agent announces on startup**: agent.js sends an `announce` action to
+  Gateway's wxOpenId, which auto-adds the route and notifies WeChat user.
 
 ## State Files
 
 ```
 ~/.claude/channels/wechat-cc/
-  ├── pairing.json     — {ilinkUserId, ccOpenId, ccAgentId}
-  ├── bot-ob.json      — Bot's OB L0 identity
-  └── wechat/          — WeixinBotClient state (accounts, sync)
+  ├── routes.json       — Route table {/cc → {openId, name}, /trae → ...}
+  ├── binding.json      — {ilinkUserId, wxOpenId, defaultRoute}
+  ├── bot-ob.json       — Gateway's OB identity
+  ├── wx-identity.json  — WeChat user's OB identity (permanent)
+  └── wechat/           — WeixinBotClient state (accounts, sync)
+
+<project>/.cc-data/      — CC Agent OB identity (agent.js --data-dir)
+  ├── credentials.json
+  └── cursor.json
 ```
 
-CC's OB identity is read from `~/.oceanbus-chat/credentials.json` (shared with ocean-chat).
+CC's OB identity is also read from `~/.oceanbus-chat/credentials.json` (shared with ocean-chat).
 
 ## Publishing
 
