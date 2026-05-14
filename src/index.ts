@@ -495,20 +495,28 @@ async function main() {
         if (action === "announce") {
           const agentName = meta.agent_name || ("Agent-" + msg.from_openid.slice(0, 4));
           const agentOpenId = meta.agent_openid || msg.from_openid;
-          const prefix = "/" + agentName.toLowerCase().replace(/\s+/g, '-');
+          let routeName = agentName;
+          let prefix = "/" + routeName.toLowerCase().replace(/\s+/g, '-');
           rt = loadRoutes();
+          // Collision: same name, different agent → auto-increment
+          if (rt.routes[prefix] && rt.routes[prefix].openId !== agentOpenId) {
+            let suffix = 2;
+            while (rt.routes[prefix + "-" + suffix]) suffix++;
+            routeName = agentName + "-" + suffix;
+            prefix = prefix + "-" + suffix;
+          }
           const isNew = !rt.routes[prefix];
           if (isNew) {
-            rt.routes[prefix] = { openId: agentOpenId, name: agentName, type: meta.agent_type || "agent", addedAt: new Date().toISOString() };
+            rt.routes[prefix] = { openId: agentOpenId, name: routeName, type: meta.agent_type || "agent", addedAt: new Date().toISOString() };
             if (!rt.default) rt.default = prefix;
             saveRoutes(rt);
-            log(`[announce] auto-added route: ${prefix} → ${agentName}`);
+            log(`[announce] auto-added route: ${prefix} → ${routeName}`);
           } else {
             // Agent re-connected → update OpenID (may have changed)
             rt.routes[prefix].openId = agentOpenId;
-            rt.routes[prefix].name = agentName;
+            rt.routes[prefix].name = routeName;
             saveRoutes(rt);
-            log(`[announce] updated route: ${prefix} → ${agentName}`);
+            log(`[announce] updated route: ${prefix} → ${routeName}`);
           }
           const binding = loadBinding();
           if (binding?.ilinkUserId) {
@@ -567,9 +575,24 @@ async function main() {
     }
   });
 
+  // Dedup: prevent duplicate processing of the same message (iLink may fire multiple events)
+  const _recentFingerprints = new Set<string>();
+  function _isDuplicate(chatId: string, text: string): boolean {
+    const fp = `${chatId}:${text}`;
+    if (_recentFingerprints.has(fp)) return true;
+    _recentFingerprints.add(fp);
+    if (_recentFingerprints.size > 200) {
+      const it = _recentFingerprints.values();
+      for (let i = 0; i < 100; i++) _recentFingerprints.delete(it.next().value);
+    }
+    return false;
+  }
+
   client.on("message", async (msg: InboundMessage) => {
     const text = (msg.text || "").trim();
     if (!text) return;
+
+    if (_isDuplicate(msg.chatId, text)) return;
     log(`[微信] ${msg.chatId.slice(0, 12)}...: ${text.slice(0, 80)}`);
 
     // Start typing indicator (matches reference plugin behavior)
