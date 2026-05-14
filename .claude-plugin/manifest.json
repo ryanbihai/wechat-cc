@@ -1,0 +1,11 @@
+{
+  "name": "wechat-cc",
+  "version": "0.2.0",
+  "description": "OB Gateway — WeChat ⇄ OB L0 ⇄ Agents。路由前缀分发，多 Agent 支持",
+  "author": "OceanBus",
+  "license": "MIT",
+  "keywords": ["wechat", "weixin", "channel", "oceanbus"],
+  "requirements": {
+    "node": ">=22.0.0"
+  }
+}
