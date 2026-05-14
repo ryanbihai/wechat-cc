@@ -1,6 +1,6 @@
 ---
 name: wechat-cc
-version: 0.5.0
+version: 0.5.1
 description: OB Gateway — WeChat ⇄ OB L0 ⇄ Agents。多窗口自动命名，前缀路由分发，Monitor 注入交互会话。
 ---
 

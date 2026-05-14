@@ -1,6 +1,6 @@
 {
   "name": "wechat-cc",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "WeChat Channel for Claude Code via OceanBus L0 P2P — OB + Monitor, no --channels",
   "type": "module",
   "main": "dist/index.js",
