@@ -206,6 +206,53 @@ function handleSystemCommand(text: string, wxUserId: string, rt: RouteTable): st
   }
 }
 
+// ── Bridge Telemetry ───────────────────────────────────────────
+// Counts WeChat↔CC message flows and periodically reports to the
+// OceanBus public dashboard. Only sends aggregate counters — no
+// message content, user IDs, or OB addresses ever leave the machine.
+
+const STATS_URL = "http://39.106.168.88:17019/api/public/wechat-cc/stats";
+const INSTANCE_FILE = path.join(STATE_DIR, "instance.json");
+
+let fwdTotal = 0;
+let replyTotal = 0;
+let bridgeOnline = false;
+let bridgeStartedAt = 0;
+let instanceId = "";
+
+function initBridgeTelemetry() {
+  bridgeStartedAt = Date.now();
+  try {
+    if (fs.existsSync(INSTANCE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(INSTANCE_FILE, "utf-8"));
+      instanceId = data.instance_id || "";
+    }
+  } catch { /* corrupt */ }
+  if (!instanceId) {
+    instanceId = `wc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    ensureDir();
+    try { fs.writeFileSync(INSTANCE_FILE, JSON.stringify({ instance_id: instanceId, created_at: new Date().toISOString() }), "utf-8"); } catch {}
+  }
+}
+
+function reportBridgeStats() {
+  if (!instanceId) return;
+  const rt = loadRoutes();
+  const body = JSON.stringify({
+    instance_id: instanceId,
+    fwd_total: fwdTotal,
+    reply_total: replyTotal,
+    pairings: Object.keys(rt.routes).length,
+    online: bridgeOnline,
+    uptime_ms: Date.now() - bridgeStartedAt,
+  });
+  fetch(STATS_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  }).catch(() => {});
+}
+
 // ── MCP Server ─────────────────────────────────────────────────
 function createMcpServer(client: WeixinBotClient) {
   const server = new Server(
@@ -277,6 +324,7 @@ function createMcpServer(client: WeixinBotClient) {
           const sender = args.name || "Claude Code";
           const prefix = args.text.startsWith('🔔') ? '' : `🔔${sender}：\n`;
           await client.sendText(args.chat_id, prefix + args.text);
+          replyTotal++;
           return { content: [{ type: "text" as const, text: "已发送" }] };
         } catch (e: any) {
           return { content: [{ type: "text" as const, text: `发送失败: ${String(e)}` }] };
@@ -294,6 +342,7 @@ function createMcpServer(client: WeixinBotClient) {
           const sender = args.name || "Claude Code";
           const prefix = args.text.startsWith('🔔') ? '' : `🔔${sender}：\n`;
           await client.sendText(chatId, prefix + args.text);
+          replyTotal++;
           return { content: [{ type: "text" as const, text: "已发送" }] };
         } catch (e: any) {
           return { content: [{ type: "text" as const, text: `发送失败: ${String(e)}` }] };
@@ -544,6 +593,7 @@ async function main() {
 
   // 6. Event bindings
   client.on("loginSuccess", (accountId: string) => {
+    bridgeOnline = true;
     log(`login success: ${accountId}`);
     const s = client.getStatus();
     if (s.userId) {
@@ -661,6 +711,7 @@ async function main() {
         await ob.destroy();
       }
       log(`[→OB] → ${route.name} (${route.openId.slice(0, 5)}...)`);
+      fwdTotal++;
     } catch (e: any) {
       log(`OB send failed: ${e.message}`);
       await client.sendText(msg.chatId, `转发失败: ${e.message}`).catch(() => {});
@@ -668,6 +719,7 @@ async function main() {
   });
 
   client.on("sessionExpired", async () => {
+    bridgeOnline = false;
     log("session expired — user should re-login via MCP login tool");
   });
 
@@ -703,6 +755,10 @@ async function main() {
   } else {
     log(`gateway ready — ${Object.keys(rt.routes).length} routes, default: ${rt.default || "(none)"}`);
   }
+
+  // 9. Bridge telemetry — report stats to OceanBus dashboard every 60s
+  initBridgeTelemetry();
+  setInterval(reportBridgeStats, 60_000);
 
   await new Promise(() => {});
 }
